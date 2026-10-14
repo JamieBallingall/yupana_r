@@ -161,6 +161,9 @@ provisional, and names the open question it answers where there is one.
 - **Signatures keep their sizes.** When a signature's size agrees with the definition, the range
   takes the size as the signature writes it, so a fixed size named there (`[s, 1]`) carries into
   the layout below it (`@ (s + 3, 4)`).
+- **Functions.** A definition with parameters, `discount rate years = …`, is a function. Its size
+  is worked out at each call from the arguments' sizes, and it becomes a defined name holding a
+  LAMBDA, so the workbook can call it too.
 - **`lag`** works along columns. `from` gives the first values of `lag 1` only (question 1).
 - **Names** of bindings and sizes are lower case ASCII and follow the rules for defined names: not
   a cell (`tax2026`), not R1C1 (`r`, `c1`, `rc`), not a function or keyword (question 2).

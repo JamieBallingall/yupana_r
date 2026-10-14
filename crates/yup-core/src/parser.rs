@@ -256,7 +256,8 @@ impl Parser {
                 }
                 _ => match self.peek_second() {
                     Token::Colon => self.signature()?,
-                    Token::Equals => self.definition()?,
+                    // A name followed by names is a function and its parameters.
+                    Token::Equals | Token::Name(_) => self.definition()?,
                     _ => {
                         self.advance();
                         return Err(self.unexpected(&format!("`:` or `=` after `{name}`")));
@@ -474,9 +475,13 @@ impl Parser {
 
     fn definition(&mut self) -> Parsed<ItemKind> {
         let name = self.ident()?;
+        let mut params = Vec::new();
+        while matches!(self.peek(), Token::Name(_)) {
+            params.push(self.ident()?);
+        }
         self.expect(&Token::Equals, "`=`")?;
         let expr = self.expr()?;
-        Ok(ItemKind::Definition { name, expr })
+        Ok(ItemKind::Definition { name, params, expr })
     }
 
     fn expr(&mut self) -> Parsed<Expr> {

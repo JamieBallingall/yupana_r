@@ -38,8 +38,12 @@ pub enum ItemKind {
     Size { name: Ident, kind: SizeKind },
     /// `name : …`: what is known about a binding besides its definition.
     Signature(Box<Signature>),
-    /// `name = expression`.
-    Definition { name: Ident, expr: Expr },
+    /// `name = expression`, or `name parameter … = expression` for a function.
+    Definition {
+        name: Ident,
+        params: Vec<Ident>,
+        expr: Expr,
+    },
 }
 
 /// A name and where it was written.

@@ -17,6 +17,13 @@ revenue_growth = 0.06
 ebitda_margin : 'EBITDA margin' Input Format "0.0%"
 ebitda_margin = 0.22
 
+discount_rate : 'Discount rate' Input Format "0.0%"
+discount_rate = 0.09
+
+// A function of its parameters. It has no cells of its own: it becomes a defined name in the
+// workbook, holding a LAMBDA, which can be called there as well as here.
+discount rate years = 1 / (1 + rate) ^ years
+
 sheet 'Forecast'
 
 heading 'Revenue'
@@ -46,3 +53,12 @@ ebitda = revenue * ebitda_margin
 
 total_ebitda : 'EBITDA over the forecast' Format "#,##0" Bold
 total_ebitda = sum ebitda
+
+gap
+heading 'Value'
+
+discount_factor : 'Discount factor' Format "0.000"
+discount_factor = discount discount_rate year
+
+present_value : 'Present value of EBITDA' Format "#,##0" Bold
+present_value = sum (ebitda * discount_factor)

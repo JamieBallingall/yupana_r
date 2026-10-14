@@ -38,6 +38,7 @@ year = 1 .. horizon
 | `s : Size Fixed` with `s = 4` | Declares a size known when the file is written. |
 | `name : …` | A signature: the label, size, place and look of a binding. |
 | `name = expression` | A definition. |
+| `name a b = expression` | A function of `a` and `b`. |
 
 Items written before any `sheet` statement go on a sheet called `Sheet1`.
 
@@ -53,6 +54,7 @@ A binding is a name with a definition. What its signature says decides what it b
 | has a label and `Input` | input | its values, in cells the reader can change, in blue |
 | has a label | shown | one formula in its anchor cell, spilling as far as it needs |
 | no label, or none at all | local | nothing: its formula goes into the formulas using it |
+| none, and has parameters | function | a defined name holding a LAMBDA |
 
 Every shown binding and input becomes a workbook-scoped defined name, and formulas in the workbook
 refer to them by those names.
@@ -64,6 +66,23 @@ or a keyword (`if`, `then`, `else`, `from`, `sheet`, `heading`, `gap`, `yup`, `t
 
 An input's definition is written out in the file: a number, a string, `true`, `false`, or a list
 of these.
+
+## Functions
+
+```text
+discount rate years = 1 / (1 + rate) ^ years
+
+discount_factor : 'Discount factor'
+discount_factor = discount discount_rate year
+```
+
+A definition with parameters is a function. It has no cells and no signature: each call has the
+size its arguments give it, worked out where the call is made. Inside the body, a parameter hides
+any binding of the same name, and only the function's own parameters are visible. A function can
+call other functions, but not itself.
+
+In the workbook a function is a defined name holding a LAMBDA, so it can be called there too, and
+a call is written as the app writes one: `discount(discount_rate,year)`.
 
 ## Signatures
 

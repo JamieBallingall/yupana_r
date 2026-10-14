@@ -8,13 +8,13 @@
 //! Every `a .. b` whose end is not known when the file is written introduces a new `Unknown`
 //! size. A signature can name it, and the name is checked rather than trusted.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::diagnostic::{Diagnostic, Pos};
 use crate::functions::Builtin;
-use crate::resolve::{Model, Symbol};
+use crate::resolve::{Model, Role, Symbol};
 use crate::size::SizeExpr;
-use crate::syntax::{Expr, ExprKind, Program, Signature, SizeKind, SizeSyntax};
+use crate::syntax::{Expr, ExprKind, Ident, Program, Signature, SizeKind, SizeSyntax};
 
 /// Where a range sits along one dimension: `size` positions, starting at position `start`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -113,6 +113,9 @@ struct Infer<'a> {
     shapes: Vec<Option<Shape>>,
     errors: Vec<Diagnostic>,
     current: usize,
+    /// The shapes of the parameters of the functions being called, innermost last. A function
+    /// body sees its own parameters only.
+    params: Vec<BTreeMap<String, Shape>>,
 }
 
 /// Infers the shape of every binding in `model`.
@@ -142,6 +145,7 @@ pub fn infer(program: &Program, model: &Model) -> Result<Typed, Vec<Diagnostic>>
         shapes: vec![None; model.bindings.len()],
         errors: Vec::new(),
         current: 0,
+        params: Vec::new(),
     };
     for &binding in &model.order {
         infer.binding(binding);
@@ -213,6 +217,11 @@ impl Infer<'_> {
 
     fn binding(&mut self, binding: usize) {
         self.current = binding;
+        // A function has no shape of its own; each call is inferred where it is made.
+        if self.model.bindings[binding].role == Role::Function {
+            self.shapes[binding] = Some(Shape::scalar());
+            return;
+        }
         let expr = self.model.definition(self.program, binding);
         let shape = match self.shape(expr) {
             Ok(shape) => shape,
@@ -237,6 +246,14 @@ impl Infer<'_> {
     fn shape(&mut self, expr: &Expr) -> Inferred {
         match &expr.kind {
             ExprKind::Number { .. } | ExprKind::Str(_) | ExprKind::Bool(_) => Ok(Shape::scalar()),
+            ExprKind::Name(name)
+                if self
+                    .params
+                    .last()
+                    .is_some_and(|frame| frame.contains_key(name)) =>
+            {
+                Ok(self.params.last().expect("checked just now")[name].clone())
+            }
             ExprKind::Name(name) => match self.model.symbols.get(name) {
                 // A binding whose definition is wrong has been reported; what uses it is not.
                 Some(Symbol::Binding(binding)) => self.shapes[*binding].clone().ok_or(None),
@@ -291,11 +308,36 @@ impl Infer<'_> {
                 })
             }
             ExprKind::Range { first, last } => self.range(expr, first, last),
-            ExprKind::Apply { func, args, seed } => {
-                let builtin = Builtin::lookup(&func.name).expect("Resolve checks function names");
-                self.apply(expr, builtin, args, seed.as_deref())
-            }
+            ExprKind::Apply { func, args, seed } => match Builtin::lookup(&func.name) {
+                Some(builtin) => self.apply(expr, builtin, args, seed.as_deref()),
+                None => self.call(func, args),
+            },
         }
+    }
+
+    /// A call of a function of the file's own. Its body is inferred with its parameters taking
+    /// the shapes of the arguments, so each call has the shape its arguments give it.
+    fn call(&mut self, func: &Ident, args: &[Expr]) -> Inferred {
+        let Some(&Symbol::Binding(binding)) = self.model.symbols.get(&func.name) else {
+            unreachable!("Resolve checks function names");
+        };
+        let mut frame = BTreeMap::new();
+        for (param, arg) in self.model.bindings[binding].params.iter().zip(args) {
+            frame.insert(param.clone(), self.shape(arg)?);
+        }
+        self.params.push(frame);
+        let body = self.model.definition(self.program, binding);
+        let shape = self.shape(body);
+        self.params.pop();
+        shape.map_err(|error| {
+            error.map(|mut error| {
+                error.message.push_str(&format!(
+                    ", in `{}` as it is called at {}",
+                    func.name, func.pos
+                ));
+                error
+            })
+        })
     }
 
     fn range(&mut self, expr: &Expr, first: &Expr, last: &Expr) -> Inferred {

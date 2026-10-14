@@ -52,7 +52,14 @@ fn item_text(item: &Item) -> String {
             format!("{} : Size {kind}", name.name)
         }
         ItemKind::Signature(sig) => signature(sig),
-        ItemKind::Definition { name, expr } => format!("{} = {}", name.name, expression(expr)),
+        ItemKind::Definition { name, params, expr } => {
+            let mut head = name.name.clone();
+            for param in params {
+                head.push(' ');
+                head.push_str(&param.name);
+            }
+            format!("{head} = {}", expression(expr))
+        }
     }
 }
 

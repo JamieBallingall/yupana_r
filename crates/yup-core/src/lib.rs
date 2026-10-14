@@ -334,6 +334,41 @@ names
     }
 
     #[test]
+    fn a_function_becomes_a_lambda_and_takes_the_shape_of_its_arguments() {
+        // The parameter `rate` hides the binding of the same name inside the function's body.
+        let source = "yup 0.1\nrate : 'Rate' Input\nrate = 0.1\ndiscount rate t = 1 / (1 + rate) \
+                      ^ t\nyears = 1 .. 3\nfactors : 'Factors'\nfactors = discount rate \
+                      years\none : 'One'\none = discount 0.2 1\n";
+        assert_eq!(
+            text(source, Step::Infer),
+            "yup 0.1\nsheet 'Sheet1'\nrate : [1, 1] 'Rate' Input\nrate = 0.1\ndiscount rate t = 1 \
+             / (1 + rate) ^ t\nyears : [1, 3]\nyears = 1 .. 3\nfactors : [1, 3] \
+             'Factors'\nfactors = discount rate years\none : [1, 1] 'One'\none = discount 0.2 1\n"
+        );
+        let listing = text(source, Step::Lower);
+        for line in [
+            "  D3     =discount(rate,_xlfn.SEQUENCE(1,3))",
+            "  D4     =discount(0.2,1)",
+            "  discount = _xlfn.LAMBDA(_xlpm.rate,_xlpm.t,1/(1+_xlpm.rate)^_xlpm.t)",
+            "  one = Sheet1!$D$4",
+        ] {
+            assert!(listing.contains(line), "{line}\n{listing}");
+        }
+    }
+
+    #[test]
+    fn an_error_in_a_function_names_the_call() {
+        let source = "yup 0.1\nshift x = tail x / init x\ny = shift (1 .. 3)\n";
+        let errors = show(source, Step::Infer).expect_err("misaligned");
+        assert_eq!(
+            errors[0].to_string(),
+            "2:18: error: the two sides of `/` are misaligned along the columns: one covers \
+             positions [1, 3) and the other [0, 2); `lag` shifts a range along, and `tail` and \
+             `init` drop its ends, in `shift` as it is called at 3:5"
+        );
+    }
+
+    #[test]
     fn logical_operators_work_position_by_position() {
         let source = "yup 0.1\nyears = 1 .. 4\nmiddle : 'Middle'\nmiddle = years > 1 && years < \
                       4 || not (years /= 2)\n";

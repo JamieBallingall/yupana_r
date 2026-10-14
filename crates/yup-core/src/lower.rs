@@ -22,7 +22,7 @@ use crate::functions::Builtin;
 use crate::ground::{Cell as At, Grounded};
 use crate::infer::Typed;
 use crate::place::{LABEL_OFFSET, VALUE_COLUMN};
-use crate::resolve::{Model, Role, SheetItem, Symbol};
+use crate::resolve::{Binding, Model, Role, SheetItem, Symbol};
 use crate::syntax::{BinOp, Expr, ExprKind, ItemKind, Program};
 
 /// The longest formula the spreadsheet app takes, from its published limits.
@@ -251,6 +251,14 @@ pub fn lower(
             widths,
         });
     }
+    for (binding, b) in model.bindings.iter().enumerate() {
+        if b.role == Role::Function {
+            match lowerer.function(binding) {
+                Ok(name) => names.push(name),
+                Err(error) => errors.push(error),
+            }
+        }
+    }
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -318,27 +326,8 @@ impl Lowerer<'_> {
                 }
             }
         } else {
-            let formula = self.formula(expr)?;
-            if formula.text.chars().count() > MAX_FORMULA {
-                return Err(Diagnostic::error(
-                    b.pos,
-                    format!(
-                        "the formula for `{}` would be longer than the {MAX_FORMULA} characters the \
-                         spreadsheet app takes; make parts of it shown bindings of their own",
-                        b.name
-                    ),
-                ));
-            }
-            if formula.depth > MAX_NESTING {
-                return Err(Diagnostic::error(
-                    b.pos,
-                    format!(
-                        "the formula for `{}` would nest functions more than {MAX_NESTING} deep; \
-                         make parts of it shown bindings of their own",
-                        b.name
-                    ),
-                ));
-            }
+            let formula = self.formula(expr, &[])?;
+            within_limits(b, &formula)?;
             put(
                 cells,
                 (row, column),
@@ -364,6 +353,25 @@ impl Lowerer<'_> {
         })
     }
 
+    /// A function, as a defined name whose value is a LAMBDA of its parameters. It can be
+    /// called by name in the workbook as well as in the file.
+    fn function(&self, binding: usize) -> Result<DefinedName, Diagnostic> {
+        let b = &self.model.bindings[binding];
+        let body = self.formula(self.model.definition(self.program, binding), &b.params)?;
+        let mut args: Vec<Formula> = b
+            .params
+            .iter()
+            .map(|param| Formula::atom(format!("_xlpm.{param}")))
+            .collect();
+        args.push(body);
+        let lambda = call("_xlfn.LAMBDA", &args);
+        within_limits(b, &lambda)?;
+        Ok(DefinedName {
+            name: b.name.clone(),
+            refers_to: lambda.text,
+        })
+    }
+
     /// What a shown binding's defined name refers to.
     fn reference(&self, binding: usize, sheet: &str, (row, column): At) -> String {
         let shape = &self.grounded.shapes[binding];
@@ -381,7 +389,9 @@ impl Lowerer<'_> {
         }
     }
 
-    fn formula(&self, expr: &Expr) -> Result<Formula, Diagnostic> {
+    /// The formula for an expression. `scope` names the parameters of the function whose body
+    /// this is, if any; the file writes them with the prefix `_xlpm.`.
+    fn formula(&self, expr: &Expr, scope: &[String]) -> Result<Formula, Diagnostic> {
         let formula = match &expr.kind {
             ExprKind::Number { value, .. } => Formula::atom(number(*value)),
             ExprKind::Str(value) => {
@@ -397,11 +407,12 @@ impl Lowerer<'_> {
                 Formula::atom(format!("\"{}\"", value.replace('"', "\"\"")))
             }
             ExprKind::Bool(value) => Formula::atom(if *value { "TRUE" } else { "FALSE" }),
+            ExprKind::Name(name) if scope.contains(name) => Formula::atom(format!("_xlpm.{name}")),
             ExprKind::Name(name) => match self.model.symbols.get(name) {
                 Some(Symbol::Binding(binding))
                     if self.model.bindings[*binding].role == Role::Local =>
                 {
-                    self.formula(self.model.definition(self.program, *binding))?
+                    self.formula(self.model.definition(self.program, *binding), &[])?
                 }
                 Some(Symbol::Binding(_)) => Formula::atom(name),
                 Some(Symbol::Size(var)) => Formula::atom(
@@ -413,22 +424,24 @@ impl Lowerer<'_> {
                 None => unreachable!("Resolve reports unknown names"),
             },
             ExprKind::Neg(operand) => {
-                let operand = self.formula(operand)?;
+                let operand = self.formula(operand, scope)?;
                 Formula {
                     text: format!("-{}", operand.wrapped(NEGATION)),
                     precedence: NEGATION,
                     depth: operand.depth,
                 }
             }
-            ExprKind::Binary { op, left, right } => {
-                binary(*op, &self.formula(left)?, &self.formula(right)?)
-            }
+            ExprKind::Binary { op, left, right } => binary(
+                *op,
+                &self.formula(left, scope)?,
+                &self.formula(right, scope)?,
+            ),
             ExprKind::If { cond, then, other } => call(
                 "IF",
                 &[
-                    self.formula(cond)?,
-                    self.formula(then)?,
-                    self.formula(other)?,
+                    self.formula(cond, scope)?,
+                    self.formula(then, scope)?,
+                    self.formula(other, scope)?,
                 ],
             ),
             ExprKind::List(rows) => {
@@ -446,7 +459,7 @@ impl Lowerer<'_> {
                 let start = first
                     .integer()
                     .expect("Infer checks that a range starts at a whole number");
-                let last = self.formula(last)?;
+                let last = self.formula(last, scope)?;
                 // The count of whole numbers from `start` to `last` is `last - (start - 1)`.
                 let count = match start - 1 {
                     0 => last,
@@ -461,10 +474,17 @@ impl Lowerer<'_> {
                 }
                 call("_xlfn.SEQUENCE", &args)
             }
-            ExprKind::Apply { func, args, seed } => {
-                let builtin = Builtin::lookup(&func.name).expect("Resolve checks function names");
-                self.apply(builtin, args, seed.as_deref())?
-            }
+            ExprKind::Apply { func, args, seed } => match Builtin::lookup(&func.name) {
+                Some(builtin) => self.apply(builtin, args, seed.as_deref(), scope)?,
+                // A function of the file's own is a defined name, called by that name.
+                None => {
+                    let args = args
+                        .iter()
+                        .map(|arg| self.formula(arg, scope))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    call(&func.name, &args)
+                }
+            },
         };
         Ok(formula)
     }
@@ -474,8 +494,9 @@ impl Lowerer<'_> {
         builtin: Builtin,
         args: &[Expr],
         seed: Option<&Expr>,
+        scope: &[String],
     ) -> Result<Formula, Diagnostic> {
-        let arg = |index: usize| self.formula(&args[index]);
+        let arg = |index: usize| self.formula(&args[index], scope);
         let drop_columns = |x: Formula, columns: i64| {
             call(
                 "_xlfn.DROP",
@@ -489,7 +510,7 @@ impl Lowerer<'_> {
                     .expect("Infer checks that a lag is a whole number");
                 let dropped = drop_columns(arg(1)?, -periods);
                 match seed {
-                    Some(seed) => call("_xlfn.HSTACK", &[self.formula(seed)?, dropped]),
+                    Some(seed) => call("_xlfn.HSTACK", &[self.formula(seed, scope)?, dropped]),
                     None => dropped,
                 }
             }
@@ -537,6 +558,24 @@ impl Lowerer<'_> {
         };
         Ok(formula)
     }
+}
+
+/// Checks a binding's formula against the spreadsheet app's limits on length and nesting.
+fn within_limits(binding: &Binding, formula: &Formula) -> Result<(), Diagnostic> {
+    let problem = if formula.text.chars().count() > MAX_FORMULA {
+        format!("would be longer than the {MAX_FORMULA} characters the spreadsheet app takes")
+    } else if formula.depth > MAX_NESTING {
+        format!("would nest functions more than {MAX_NESTING} deep")
+    } else {
+        return Ok(());
+    };
+    Err(Diagnostic::error(
+        binding.pos,
+        format!(
+            "the formula for `{}` {problem}; make parts of it shown bindings of their own",
+            binding.name
+        ),
+    ))
 }
 
 /// The value of a literal, which Resolve and Infer have checked is one.

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use crate::cells::{looks_like_cell, looks_like_r1c1};
 use crate::diagnostic::{Diagnostic, Pos};
 use crate::functions::Builtin;
-use crate::syntax::{Expr, ExprKind, ItemKind, Program, Signature, SizeKind, Text};
+use crate::syntax::{Expr, ExprKind, Ident, ItemKind, Program, Signature, SizeKind, Text};
 
 /// The sheet that holds items written before any `sheet` statement.
 pub const DEFAULT_SHEET: &str = "Sheet1";
@@ -64,6 +64,8 @@ pub enum Role {
     Input,
     /// Not shown; its formula is written into the formulas that use it.
     Local,
+    /// A function of its parameters, written to the workbook as a LAMBDA in a defined name.
+    Function,
 }
 
 /// A name defined by `name = …`.
@@ -78,6 +80,8 @@ pub struct Binding {
     pub role: Role,
     /// The sheet a shown binding is laid out on.
     pub sheet: Option<usize>,
+    /// A function's parameters; empty for any other binding.
+    pub params: Vec<String>,
 }
 
 /// A size variable declared by `name : Size …`.
@@ -238,15 +242,28 @@ pub fn resolve(program: &Program) -> Result<Model, Vec<Diagnostic>> {
     in_order.sort();
     let mut bindings: Vec<Binding> = Vec::new();
     for (index, name) in in_order {
+        let ItemKind::Definition { params, .. } = &program.items[index].kind else {
+            unreachable!("a definition index points at a definition");
+        };
         let signature = signatures.get(&name).copied();
         let sig = signature.map(|index| signature_at(program, index));
         let role = match sig {
+            _ if !params.is_empty() => Role::Function,
             Some(sig) if sig.input.is_some() => Role::Input,
             Some(sig) if sig.label.is_some() => Role::Shown,
             _ => Role::Local,
         };
         if let Some(sig) = sig {
             errors.extend(role_errors(sig, role));
+        }
+        for (i, param) in params.iter().enumerate() {
+            errors.extend(name_error(&param.name, param.pos));
+            if params[..i].iter().any(|other| other.name == param.name) {
+                errors.push(Diagnostic::error(
+                    param.pos,
+                    format!("the parameter `{}` is given twice", param.name),
+                ));
+            }
         }
         symbols.insert(name.clone(), Symbol::Binding(bindings.len()));
         bindings.push(Binding {
@@ -256,6 +273,7 @@ pub fn resolve(program: &Program) -> Result<Model, Vec<Diagnostic>> {
             definition: index,
             role,
             sheet: None,
+            params: params.iter().map(|param| param.name.clone()).collect(),
         });
     }
     for (name, &index) in &signatures {
@@ -275,7 +293,13 @@ pub fn resolve(program: &Program) -> Result<Model, Vec<Diagnostic>> {
             unreachable!("a binding's definition index points at a definition");
         };
         let mut found = Vec::new();
-        resolve_expr(expr, &symbols, &sizes, &mut found, &mut errors);
+        let scope = Scope {
+            symbols: &symbols,
+            sizes: &sizes,
+            bindings: &bindings,
+            params: &binding.params,
+        };
+        scope.resolve_expr(expr, &mut found, &mut errors);
         if binding.role == Role::Input
             && let Err(error) = check_input(expr, binding.pos)
         {
@@ -380,6 +404,16 @@ fn lay_out(
 fn role_errors(sig: &Signature, role: Role) -> Vec<Diagnostic> {
     let name = &sig.name.name;
     let mut errors = Vec::new();
+    if role == Role::Function {
+        errors.push(Diagnostic::error(
+            sig.name.pos,
+            format!(
+                "`{name}` is a function, which has no cells and so no signature; its size is \
+                 worked out where it is used"
+            ),
+        ));
+        return errors;
+    }
     if role == Role::Input && sig.label.is_none() {
         errors.push(Diagnostic::error(
             sig.name.pos,
@@ -405,68 +439,124 @@ fn role_errors(sig: &Signature, role: Role) -> Vec<Diagnostic> {
     errors
 }
 
-fn resolve_expr(
-    expr: &Expr,
-    symbols: &BTreeMap<String, Symbol>,
-    sizes: &[SizeDecl],
-    uses: &mut Vec<usize>,
-    errors: &mut Vec<Diagnostic>,
-) {
-    match &expr.kind {
-        ExprKind::Name(name) => match symbols.get(name) {
-            Some(Symbol::Binding(b)) => uses.push(*b),
-            Some(Symbol::Size(s)) => {
-                if sizes[*s].kind == SizeKind::Unknown {
+/// What the names in a definition can refer to: the file's names, and, inside a function, its
+/// parameters, which come first.
+struct Scope<'a> {
+    symbols: &'a BTreeMap<String, Symbol>,
+    sizes: &'a [SizeDecl],
+    bindings: &'a [Binding],
+    params: &'a [String],
+}
+
+/// How a function is called, for messages: `name a b`.
+fn call_usage(binding: &Binding) -> String {
+    let mut usage = binding.name.clone();
+    for param in &binding.params {
+        usage.push(' ');
+        usage.push_str(param);
+    }
+    usage
+}
+
+impl Scope<'_> {
+    fn resolve_expr(&self, expr: &Expr, uses: &mut Vec<usize>, errors: &mut Vec<Diagnostic>) {
+        match &expr.kind {
+            ExprKind::Name(name) if self.params.contains(name) => {}
+            ExprKind::Name(name) => match self.symbols.get(name) {
+                Some(Symbol::Binding(b)) if self.bindings[*b].role == Role::Function => {
                     errors.push(Diagnostic::error(
                         expr.pos,
                         format!(
-                            "`{name}` is an unknown size; a formula cannot use its value, but can \
-                             use the range it is the size of"
+                            "`{name}` is a function; give it its arguments: `{}`",
+                            call_usage(&self.bindings[*b])
                         ),
                     ));
                 }
-            }
-            None => {
-                let message = match Builtin::lookup(name) {
-                    Some(builtin) => format!(
-                        "`{name}` is a function; give it its arguments: `{}`",
-                        builtin.usage()
-                    ),
-                    None => format!("unknown name `{name}`"),
-                };
-                errors.push(Diagnostic::error(expr.pos, message));
-            }
-        },
-        ExprKind::Apply { func, args, .. } => match Builtin::lookup(&func.name) {
-            Some(builtin) if args.len() != builtin.arity() => {
-                let plural = if builtin.arity() == 1 { "" } else { "s" };
-                errors.push(Diagnostic::error(
-                    func.pos,
-                    format!(
-                        "`{}` takes {} argument{plural}: `{}`",
-                        func.name,
-                        builtin.arity(),
-                        builtin.usage()
-                    ),
-                ));
-            }
-            Some(_) => {}
-            None if symbols.contains_key(&func.name) => errors.push(Diagnostic::error(
+                Some(Symbol::Binding(b)) => uses.push(*b),
+                Some(Symbol::Size(s)) => {
+                    if self.sizes[*s].kind == SizeKind::Unknown {
+                        errors.push(Diagnostic::error(
+                            expr.pos,
+                            format!(
+                                "`{name}` is an unknown size; a formula cannot use its value, but \
+                                 can use the range it is the size of"
+                            ),
+                        ));
+                    }
+                }
+                None => {
+                    let message = match Builtin::lookup(name) {
+                        Some(builtin) => format!(
+                            "`{name}` is a function; give it its arguments: `{}`",
+                            builtin.usage()
+                        ),
+                        None => format!("unknown name `{name}`"),
+                    };
+                    errors.push(Diagnostic::error(expr.pos, message));
+                }
+            },
+            ExprKind::Apply { func, args, .. } => self.resolve_call(func, args.len(), uses, errors),
+            _ => {}
+        }
+        for child in expr.children() {
+            self.resolve_expr(child, uses, errors);
+        }
+    }
+
+    fn resolve_call(
+        &self,
+        func: &Ident,
+        given: usize,
+        uses: &mut Vec<usize>,
+        errors: &mut Vec<Diagnostic>,
+    ) {
+        let (expected, usage) = if let Some(builtin) = Builtin::lookup(&func.name) {
+            (builtin.arity(), builtin.usage().to_string())
+        } else if self.params.contains(&func.name) {
+            errors.push(Diagnostic::error(
                 func.pos,
                 format!(
-                    "`{}` is not a function, so it cannot take arguments",
+                    "`{}` is a parameter, and a parameter is a value, not a function",
                     func.name
                 ),
-            )),
-            None => errors.push(Diagnostic::error(
+            ));
+            return;
+        } else {
+            match self.symbols.get(&func.name) {
+                Some(Symbol::Binding(b)) if self.bindings[*b].role == Role::Function => {
+                    uses.push(*b);
+                    let binding = &self.bindings[*b];
+                    (binding.params.len(), call_usage(binding))
+                }
+                Some(_) => {
+                    errors.push(Diagnostic::error(
+                        func.pos,
+                        format!(
+                            "`{}` is not a function, so it cannot take arguments",
+                            func.name
+                        ),
+                    ));
+                    return;
+                }
+                None => {
+                    errors.push(Diagnostic::error(
+                        func.pos,
+                        format!("unknown function `{}`", func.name),
+                    ));
+                    return;
+                }
+            }
+        };
+        if given != expected {
+            let plural = if expected == 1 { "" } else { "s" };
+            errors.push(Diagnostic::error(
                 func.pos,
-                format!("unknown function `{}`", func.name),
-            )),
-        },
-        _ => {}
-    }
-    for child in expr.children() {
-        resolve_expr(child, symbols, sizes, uses, errors);
+                format!(
+                    "`{}` takes {expected} argument{plural}: `{usage}`",
+                    func.name
+                ),
+            ));
+        }
     }
 }
 
@@ -802,6 +892,24 @@ mod tests {
                  Input`",
                 "6:1: error: an input's value is written in the file: a number, a string, \
                  `true`, `false`, or a list of these",
+            ]
+        );
+    }
+
+    #[test]
+    fn functions_are_called_with_their_arguments() {
+        assert_eq!(
+            errors(
+                "yup 0.1\ndiscount rate t = 1 / (1 + rate) ^ t\na = discount 0.1\nb = \
+                 discount\nf x x = x\ng x = x 1\ndiscount : 'D'\n"
+            ),
+            [
+                "7:1: error: `discount` is a function, which has no cells and so no signature; \
+                 its size is worked out where it is used",
+                "5:5: error: the parameter `x` is given twice",
+                "3:5: error: `discount` takes 2 arguments: `discount rate t`",
+                "4:5: error: `discount` is a function; give it its arguments: `discount rate t`",
+                "6:7: error: `x` is a parameter, and a parameter is a value, not a function",
             ]
         );
     }

@@ -11,7 +11,7 @@ use crate::diagnostic::Pos;
 use crate::ground::Grounded;
 use crate::infer::{Shape, Typed};
 use crate::place::{At, Placed};
-use crate::resolve::{Model, SheetItem};
+use crate::resolve::{Model, Role, SheetItem};
 use crate::size::SizeExpr;
 use crate::syntax::{
     Coord, Ident, Item, ItemKind, Offset, Program, ShapeSyntax, Signature, SizeKind, SizeSyntax,
@@ -185,6 +185,10 @@ fn sizes(program: &Program, model: &Model, typed: &Typed, shapes: &[Shape], edit
         }
     }
     for (index, binding) in model.bindings.iter().enumerate() {
+        // A function has no size of its own, so no signature.
+        if binding.role == Role::Function {
+            continue;
+        }
         let shape = &shapes[index];
         match binding.signature {
             Some(item) => {
