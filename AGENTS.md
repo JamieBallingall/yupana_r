@@ -5,8 +5,8 @@ Instructions for coding agents working in this repository.
 ## Read first
 
 [README.md](README.md) is the design record: what the project is, the scope of stage 1, what is
-decided, and what is still open. Until the range model and the core syntax are decided there,
-the work is design, not code: the crates are a stub that keeps the commands below clean.
+decided, and what is still open. Until the core syntax is decided there, the work is design, not
+code: the crates are a stub that keeps the commands below clean.
 
 Where the code and the README disagree, fix whichever is wrong in the same commit. A decision
 made while coding is recorded in the README when it is made.
