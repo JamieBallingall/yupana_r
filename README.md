@@ -177,8 +177,8 @@ provisional, and names the open question it answers where there is one.
 - **Pins** are written `@ (row, column)`, numbers as in the elaborated forms (question 17).
 - **Layout.** Row 1 and column A are margins. Labels and headings go in column B, column C stays
   empty, and position 0 of a range's columns is column D. Headings are bold.
-- **Functions.** `min` and `max` work position by position, and `minimum` and `maximum` reduce, as
-  in Haskell. Arguments that say how much come first (`lag 1 x`, `round 2 x`). Text is joined
+- **Built-in functions.** `min` and `max` work position by position, and `minimum` and `maximum`
+  reduce, as in Haskell. Arguments that say how much come first (`lag 1 x`, `round 2 x`). Text is joined
   with `++`. Logical `&&`, `||` and `not` work position by position too.
 - **Inputs** are literals or lists of literals, written in blue, as financial models usually show
   inputs, or tables read from CSV files (question 4).
