@@ -172,6 +172,43 @@ pub enum ExprKind {
     },
 }
 
+impl Expr {
+    /// The expressions directly inside this one.
+    pub fn children(&self) -> Vec<&Expr> {
+        match &self.kind {
+            ExprKind::Number { .. } | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::Name(_) => {
+                Vec::new()
+            }
+            ExprKind::Apply { args, seed, .. } => args.iter().chain(seed.as_deref()).collect(),
+            ExprKind::Neg(operand) => vec![operand],
+            ExprKind::Binary { left, right, .. } => vec![left, right],
+            ExprKind::If { cond, then, other } => vec![cond, then, other],
+            ExprKind::List(rows) => rows.iter().flatten().collect(),
+            ExprKind::Range { first, last } => vec![first, last],
+        }
+    }
+
+    /// The value of a whole number written as a literal, such as `3` or `-1`.
+    pub fn integer(&self) -> Option<i64> {
+        match &self.kind {
+            ExprKind::Number { text, .. } if text.bytes().all(|b| b.is_ascii_digit()) => {
+                text.parse().ok()
+            }
+            ExprKind::Neg(operand) => operand.integer().map(|value| -value),
+            _ => None,
+        }
+    }
+
+    /// Whether this is a literal value: a number (perhaps negated), a string or a logical.
+    pub fn is_literal(&self) -> bool {
+        match &self.kind {
+            ExprKind::Number { .. } | ExprKind::Str(_) | ExprKind::Bool(_) => true,
+            ExprKind::Neg(operand) => matches!(operand.kind, ExprKind::Number { .. }),
+            _ => false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BinOp {
     Add,
