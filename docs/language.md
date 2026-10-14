@@ -101,6 +101,34 @@ call other functions, but not itself.
 In the workbook a function is a defined name holding a LAMBDA, so it can be called there too, and
 a call is written as the app writes one: `discount(discount_rate,year)`.
 
+## Balances carried from one period to the next
+
+```text
+opening : 'Opening balance'
+opening = lag 1 closing from amount
+
+repayment : 'Repayment'
+repayment = min scheduled opening
+
+closing : 'Closing balance'
+closing = opening - repayment
+```
+
+Bindings may use each other in a cycle when `lag 1 x from first` breaks it: each period then
+depends only on the period before, and the first period on `first`. The binding that is lagged,
+`closing` here, is the balance the cycle carries. In 0.1:
+
+- a cycle carries one balance, in one row;
+- inside the cycle, `lag` is always `lag 1 balance from first`, with the same `first` throughout;
+- what takes part in the cycle works position by position: operators, `if`, `min`, `max`, `abs`,
+  `exp`, `ln`, `sqrt`, `round` and `not`, but not `sum`, `tail` or a function of the file's own;
+- the cycle uses a row from outside it, such as `scheduled` above, which gives its length;
+- a range made with `..` is not inside the cycle.
+
+In the workbook the balance is a SCAN over the periods. Its step works out one period from the
+balance a period back, with the rest of the cycle written in place; the other members of the
+cycle are ordinary formulas that use the balance. The workbook holds no circular reference.
+
 ## Signatures
 
 A signature takes any of these parts, in any order:

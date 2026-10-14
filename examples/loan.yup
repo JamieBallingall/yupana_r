@@ -1,0 +1,49 @@
+yup 0.1
+
+// A loan for an invented company, repaid on a schedule. Each year's opening balance is the year
+// before's closing balance: a balance carried from one period to the next. The horizon can be
+// changed in the workbook, and the schedule resizes with it.
+
+sheet 'Inputs'
+
+amount : 'Amount borrowed' Input Format "#,##0"
+amount = 12000
+
+rate : 'Interest rate' Input Format "0.0%"
+rate = 0.065
+
+term : 'Term (years)' Input
+term = 5
+
+horizon : 'Horizon (years)' Input
+horizon = 7
+
+sheet 'Loan'
+
+year : 'Year'
+year = 1 .. horizon
+
+scheduled : 'Scheduled repayment' Format "#,##0"
+scheduled = if year <= term then amount / term else 0
+
+gap
+
+// These three depend on each other in a cycle, which `lag 1 closing from amount` breaks: the
+// opening balance is the closing balance a year back, starting from the amount borrowed. The
+// workbook works the closing balance out with SCAN, one year at a time.
+opening : 'Opening balance' Format "#,##0"
+opening = lag 1 closing from amount
+
+repayment : 'Repayment' Format "#,##0"
+repayment = min scheduled opening
+
+closing : 'Closing balance' Format "#,##0" Bold
+closing = opening - repayment
+
+gap
+
+interest : 'Interest' Format "#,##0"
+interest = opening * rate
+
+total_interest : 'Interest over the horizon' Format "#,##0" Bold
+total_interest = sum interest

@@ -11,6 +11,7 @@ use crate::cells::{looks_like_cell, looks_like_r1c1};
 use crate::csv::{self, Table};
 use crate::diagnostic::{Diagnostic, Pos};
 use crate::functions::Builtin;
+use crate::printer::expression;
 use crate::syntax::{Expr, ExprKind, Ident, ItemKind, Program, Signature, SizeKind, Text};
 
 /// The sheet that holds items written before any `sheet` statement.
@@ -30,6 +31,35 @@ pub struct Model {
     pub order: Vec<usize>,
     /// The table each input defined by `csv "file.csv"` reads, by binding.
     pub tables: BTreeMap<usize, Table>,
+    /// The balances carried from one period to the next.
+    pub recurrences: Vec<Recurrence>,
+}
+
+/// Bindings that depend on each other in a cycle, broken by `lag 1 state from seed`: a balance
+/// carried from one period to the next. Each period's value depends on the period before.
+#[derive(Clone, Debug)]
+pub struct Recurrence {
+    /// The bindings in the cycle, each after the others it uses in the same period.
+    pub members: Vec<usize>,
+    /// The binding carried from one period to the next.
+    pub state: usize,
+}
+
+impl Model {
+    /// The recurrence a binding belongs to, if any.
+    pub fn recurrence_of(&self, binding: usize) -> Option<&Recurrence> {
+        self.recurrences
+            .iter()
+            .find(|recurrence| recurrence.members.contains(&binding))
+    }
+}
+
+/// A binding that a definition uses. A use inside `lag 1 x from seed`, in `x`, is delayed: it
+/// reads earlier periods only, so it does not stop a cycle being worked out period by period.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Use {
+    binding: usize,
+    delayed: bool,
 }
 
 /// What a name refers to.
@@ -319,7 +349,7 @@ pub fn resolve(program: &Program, inputs: &Inputs) -> Result<Model, Vec<Diagnost
         }
     }
 
-    let mut uses: Vec<Vec<usize>> = Vec::with_capacity(bindings.len());
+    let mut uses: Vec<Vec<Use>> = Vec::with_capacity(bindings.len());
     for (index, binding) in bindings.iter().enumerate() {
         let ItemKind::Definition { expr, .. } = &program.items[binding.definition].kind else {
             unreachable!("a binding's definition index points at a definition");
@@ -334,22 +364,35 @@ pub fn resolve(program: &Program, inputs: &Inputs) -> Result<Model, Vec<Diagnost
                 tables: &tables,
                 table_bindings: &table_bindings,
             };
-            scope.resolve_expr(expr, &mut found, &mut errors);
+            scope.resolve_expr(expr, false, &mut found, &mut errors);
             if binding.role == Role::Input
                 && let Err(error) = check_input(expr, binding.pos)
             {
                 errors.push(error);
             }
         }
+        // A function's uses are never delayed, so a cycle through a function stays an error.
+        if binding.role == Role::Function {
+            for found in &mut found {
+                found.delayed = false;
+            }
+        }
         uses.push(found);
     }
-    let order = match dependency_order(&bindings, &uses) {
-        Ok(order) => order,
+    let (order, cycles) = match dependency_order(&bindings, &uses) {
+        Ok(ordered) => ordered,
         Err(error) => {
             errors.push(error);
-            Vec::new()
+            (Vec::new(), Vec::new())
         }
     };
+    let mut recurrences = Vec::new();
+    for members in cycles {
+        match recurrence(program, &symbols, &bindings, &uses, members) {
+            Ok(recurrence) => recurrences.push(recurrence),
+            Err(error) => errors.push(error),
+        }
+    }
 
     if errors.is_empty() {
         Ok(Model {
@@ -359,6 +402,7 @@ pub fn resolve(program: &Program, inputs: &Inputs) -> Result<Model, Vec<Diagnost
             symbols,
             order,
             tables,
+            recurrences,
         })
     } else {
         Err(errors)
@@ -520,7 +564,13 @@ fn call_usage(binding: &Binding) -> String {
 }
 
 impl Scope<'_> {
-    fn resolve_expr(&self, expr: &Expr, uses: &mut Vec<usize>, errors: &mut Vec<Diagnostic>) {
+    fn resolve_expr(
+        &self,
+        expr: &Expr,
+        delayed: bool,
+        uses: &mut Vec<Use>,
+        errors: &mut Vec<Diagnostic>,
+    ) {
         match &expr.kind {
             ExprKind::Name(name) if self.params.contains(name) => {}
             ExprKind::Name(name) => match self.symbols.get(name) {
@@ -533,7 +583,10 @@ impl Scope<'_> {
                         ),
                     ));
                 }
-                Some(Symbol::Binding(b)) => uses.push(*b),
+                Some(Symbol::Binding(b)) => uses.push(Use {
+                    binding: *b,
+                    delayed,
+                }),
                 Some(Symbol::Size(s)) => {
                     if self.sizes[*s].kind == SizeKind::Unknown {
                         errors.push(Diagnostic::error(
@@ -556,7 +609,7 @@ impl Scope<'_> {
                     errors.push(Diagnostic::error(expr.pos, message));
                 }
             },
-            ExprKind::Apply { func, args, .. } => {
+            ExprKind::Apply { func, args, seed } => {
                 self.resolve_call(func, args.len(), uses, errors);
                 match (func.name.as_str(), args.as_slice()) {
                     ("csv", _) => errors.push(Diagnostic::error(
@@ -565,13 +618,22 @@ impl Scope<'_> {
                          `history = csv \"history.csv\"`, with `Input` in its signature",
                     )),
                     ("column", [name, table]) => errors.extend(self.column_error(name, table)),
+                    // What `lag 1 x from seed` lags is read only in earlier periods.
+                    ("lag", [periods, lagged]) if seed.is_some() => {
+                        self.resolve_expr(periods, delayed, uses, errors);
+                        self.resolve_expr(lagged, true, uses, errors);
+                        if let Some(seed) = seed {
+                            self.resolve_expr(seed, delayed, uses, errors);
+                        }
+                        return;
+                    }
                     _ => {}
                 }
             }
             _ => {}
         }
         for child in expr.children() {
-            self.resolve_expr(child, uses, errors);
+            self.resolve_expr(child, delayed, uses, errors);
         }
     }
 
@@ -623,7 +685,7 @@ impl Scope<'_> {
         &self,
         func: &Ident,
         given: usize,
-        uses: &mut Vec<usize>,
+        uses: &mut Vec<Use>,
         errors: &mut Vec<Diagnostic>,
     ) {
         let (expected, usage) = if let Some(builtin) = Builtin::lookup(&func.name) {
@@ -640,7 +702,10 @@ impl Scope<'_> {
         } else {
             match self.symbols.get(&func.name) {
                 Some(Symbol::Binding(b)) if self.bindings[*b].role == Role::Function => {
-                    uses.push(*b);
+                    uses.push(Use {
+                        binding: *b,
+                        delayed: false,
+                    });
                     let binding = &self.bindings[*b];
                     (binding.params.len(), call_usage(binding))
                 }
@@ -698,58 +763,319 @@ fn check_input(expr: &Expr, pos: Pos) -> Result<(), Diagnostic> {
     ))
 }
 
-/// Orders the bindings so that each comes after the bindings it uses.
-fn dependency_order(bindings: &[Binding], uses: &[Vec<usize>]) -> Result<Vec<usize>, Diagnostic> {
-    const UNSEEN: u8 = 0;
-    const OPEN: u8 = 1;
-    const DONE: u8 = 2;
-    let mut state = vec![UNSEEN; bindings.len()];
+/// Orders the bindings so that each comes after the bindings it uses, and finds the cycles that
+/// delayed uses break.
+///
+/// Bindings that use each other in a cycle form a group, and the groups come in the order of
+/// their dependencies. Within a group, a use that is not delayed must not close a cycle: that
+/// would be a value that depends on itself in the same period. A group with a delayed use inside
+/// it is a recurrence, returned with its members in order.
+fn dependency_order(
+    bindings: &[Binding],
+    uses: &[Vec<Use>],
+) -> Result<(Vec<usize>, Vec<Vec<usize>>), Diagnostic> {
+    let edges: Vec<Vec<usize>> = uses
+        .iter()
+        .map(|uses| uses.iter().map(|used| used.binding).collect())
+        .collect();
     let mut order = Vec::with_capacity(bindings.len());
-    for start in 0..bindings.len() {
-        if state[start] != UNSEEN {
+    let mut cycles = Vec::new();
+    for group in strongly_connected(&edges) {
+        let members: BTreeSet<usize> = group.iter().copied().collect();
+        let same_period = |binding: usize| -> Vec<usize> {
+            uses[binding]
+                .iter()
+                .filter(|used| !used.delayed && members.contains(&used.binding))
+                .map(|used| used.binding)
+                .collect()
+        };
+        let sorted =
+            topological(&group, same_period).map_err(|cycle| circular(bindings, &cycle))?;
+        let carried = group.iter().any(|&binding| {
+            uses[binding]
+                .iter()
+                .any(|used| used.delayed && members.contains(&used.binding))
+        });
+        if carried {
+            cycles.push(sorted.clone());
+        }
+        order.extend(sorted);
+    }
+    Ok((order, cycles))
+}
+
+fn circular(bindings: &[Binding], cycle: &[usize]) -> Diagnostic {
+    let path: Vec<&str> = cycle
+        .iter()
+        .map(|&binding| bindings[binding].name.as_str())
+        .collect();
+    Diagnostic::error(
+        bindings[cycle[0]].pos,
+        format!(
+            "circular definition: {}; a value cannot depend on itself in the same period, but \
+             `lag 1 x from first` carries a balance from one period to the next",
+            path.join(" -> ")
+        ),
+    )
+}
+
+/// The groups of nodes that reach each other, by Tarjan's algorithm, each group after the
+/// groups its nodes use.
+fn strongly_connected(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    const UNSEEN: usize = usize::MAX;
+    let count = edges.len();
+    let mut index = vec![UNSEEN; count];
+    let mut low = vec![0; count];
+    let mut on_stack = vec![false; count];
+    let mut stack = Vec::new();
+    let mut next = 0;
+    let mut groups = Vec::new();
+    for root in 0..count {
+        if index[root] != UNSEEN {
             continue;
         }
-        state[start] = OPEN;
-        // Each entry is a binding and how many of its uses have been followed.
-        let mut stack = vec![(start, 0)];
-        while let Some(top) = stack.last_mut() {
-            let (binding, followed) = *top;
-            let Some(&next) = uses[binding].get(followed) else {
-                state[binding] = DONE;
-                order.push(binding);
+        // Each entry is a node and how many of its edges have been followed.
+        let mut calls = vec![(root, 0)];
+        index[root] = next;
+        low[root] = next;
+        next += 1;
+        stack.push(root);
+        on_stack[root] = true;
+        while let Some(&(node, followed)) = calls.last() {
+            if let Some(&target) = edges[node].get(followed) {
+                calls.last_mut().expect("the call is there").1 += 1;
+                if index[target] == UNSEEN {
+                    index[target] = next;
+                    low[target] = next;
+                    next += 1;
+                    stack.push(target);
+                    on_stack[target] = true;
+                    calls.push((target, 0));
+                } else if on_stack[target] {
+                    low[node] = low[node].min(index[target]);
+                }
+                continue;
+            }
+            calls.pop();
+            if let Some(&(parent, _)) = calls.last() {
+                low[parent] = low[parent].min(low[node]);
+            }
+            if low[node] == index[node] {
+                let mut group = Vec::new();
+                loop {
+                    let member = stack.pop().expect("the group's nodes are on the stack");
+                    on_stack[member] = false;
+                    group.push(member);
+                    if member == node {
+                        break;
+                    }
+                }
+                group.sort_unstable();
+                groups.push(group);
+            }
+        }
+    }
+    groups
+}
+
+/// The nodes in an order where each comes after those `edges` leads to, or a cycle, its first
+/// node repeated at the end.
+fn topological(
+    nodes: &[usize],
+    edges: impl Fn(usize) -> Vec<usize>,
+) -> Result<Vec<usize>, Vec<usize>> {
+    // A node is absent until seen, `false` while its edges are followed, and `true` once done.
+    let mut done: BTreeMap<usize, bool> = BTreeMap::new();
+    let mut order = Vec::with_capacity(nodes.len());
+    for &start in nodes {
+        if done.contains_key(&start) {
+            continue;
+        }
+        done.insert(start, false);
+        let mut stack = vec![(start, edges(start), 0)];
+        while let Some((node, targets, followed)) = stack.last_mut() {
+            let Some(&target) = targets.get(*followed) else {
+                let node = *node;
+                done.insert(node, true);
+                order.push(node);
                 stack.pop();
                 continue;
             };
-            top.1 += 1;
-            match state[next] {
-                UNSEEN => {
-                    state[next] = OPEN;
-                    stack.push((next, 0));
+            *followed += 1;
+            match done.get(&target) {
+                None => {
+                    done.insert(target, false);
+                    stack.push((target, edges(target), 0));
                 }
-                OPEN => {
+                Some(false) => {
                     let from = stack
                         .iter()
-                        .position(|&(b, _)| b == next)
-                        .expect("an open binding is on the stack");
-                    let mut path: Vec<&str> = stack[from..]
-                        .iter()
-                        .map(|&(b, _)| bindings[b].name.as_str())
-                        .collect();
-                    path.push(&bindings[next].name);
-                    return Err(Diagnostic::error(
-                        bindings[next].pos,
-                        format!(
-                            "circular definition: {}; a balance carried from one period to the \
-                             next is not supported yet",
-                            path.join(" -> ")
-                        ),
-                    ));
+                        .position(|(node, _, _)| *node == target)
+                        .expect("a node being followed is on the stack");
+                    let mut cycle: Vec<usize> =
+                        stack[from..].iter().map(|(node, _, _)| *node).collect();
+                    cycle.push(target);
+                    return Err(cycle);
                 }
-                _ => {}
+                Some(true) => {}
             }
         }
     }
     Ok(order)
+}
+
+/// Checks a cycle that a delayed use breaks, and finds the balance it carries.
+///
+/// Each period of a recurrence is worked out from the period before, so inside it the balance
+/// and the bindings it depends on are taken one period at a time. Only what works position by
+/// position can take them; `lag` takes the balance itself, one period back, always with the same
+/// first value.
+fn recurrence(
+    program: &Program,
+    symbols: &BTreeMap<String, Symbol>,
+    bindings: &[Binding],
+    uses: &[Vec<Use>],
+    members: Vec<usize>,
+) -> Result<Recurrence, Diagnostic> {
+    let in_cycle: BTreeSet<usize> = members.iter().copied().collect();
+    let carried: BTreeSet<usize> = members
+        .iter()
+        .flat_map(|&binding| &uses[binding])
+        .filter(|used| used.delayed && in_cycle.contains(&used.binding))
+        .map(|used| used.binding)
+        .collect();
+    let first = &bindings[members[0]];
+    if carried.len() > 1 {
+        let names: Vec<String> = carried
+            .iter()
+            .map(|&binding| format!("`{}`", bindings[binding].name))
+            .collect();
+        return Err(Diagnostic::error(
+            first.pos,
+            format!(
+                "{} are each carried from one period to the next in the same cycle; coupled \
+                 balances are not supported yet",
+                names.join(" and ")
+            ),
+        ));
+    }
+    let state = *carried
+        .iter()
+        .next()
+        .expect("a recurrence has a delayed use inside it");
+    let mut check = RecurrenceCheck {
+        symbols,
+        members: &in_cycle,
+        state: &bindings[state].name,
+        seed: None,
+    };
+    for &binding in &members {
+        let ItemKind::Definition { expr, .. } = &program.items[bindings[binding].definition].kind
+        else {
+            unreachable!("a binding's definition index points at a definition");
+        };
+        check.check(expr)?;
+    }
+    Ok(Recurrence { members, state })
+}
+
+struct RecurrenceCheck<'a> {
+    symbols: &'a BTreeMap<String, Symbol>,
+    members: &'a BTreeSet<usize>,
+    state: &'a str,
+    /// The first value, as written, of the first `lag 1 state from first` seen.
+    seed: Option<String>,
+}
+
+impl RecurrenceCheck<'_> {
+    /// Whether an expression uses a binding in the cycle.
+    fn mentions(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Name(name) => matches!(
+                self.symbols.get(name),
+                Some(Symbol::Binding(binding)) if self.members.contains(binding)
+            ),
+            _ => expr
+                .children()
+                .into_iter()
+                .any(|child| self.mentions(child)),
+        }
+    }
+
+    fn check(&mut self, expr: &Expr) -> Result<(), Diagnostic> {
+        if !self.mentions(expr) {
+            return Ok(());
+        }
+        let state = self.state;
+        match &expr.kind {
+            ExprKind::Apply { func, args, seed } if func.name == "lag" => {
+                let carries_state = matches!(&args[1].kind, ExprKind::Name(name) if name == state);
+                let (Some(seed), true, Some(1)) = (seed, carries_state, args[0].integer()) else {
+                    return Err(Diagnostic::error(
+                        func.pos,
+                        format!(
+                            "inside a cycle, `lag` carries the balance itself one period, with \
+                             its first value: `lag 1 {state} from first`"
+                        ),
+                    ));
+                };
+                if self.mentions(seed) {
+                    return Err(Diagnostic::error(
+                        seed.pos,
+                        "the first value of a balance cannot depend on the balance",
+                    ));
+                }
+                let text = expression(seed);
+                match &self.seed {
+                    Some(first) if *first != text => Err(Diagnostic::error(
+                        seed.pos,
+                        format!(
+                            "every `lag 1 {state} from …` gives the same first value, and another \
+                             gives `{first}`"
+                        ),
+                    )),
+                    _ => {
+                        self.seed = Some(text);
+                        Ok(())
+                    }
+                }
+            }
+            ExprKind::Apply { func, args, .. } => {
+                let position_by_position = matches!(
+                    Builtin::lookup(&func.name),
+                    Some(
+                        Builtin::Min
+                            | Builtin::Max
+                            | Builtin::Abs
+                            | Builtin::Exp
+                            | Builtin::Ln
+                            | Builtin::Sqrt
+                            | Builtin::Round
+                            | Builtin::Not
+                    )
+                );
+                if !position_by_position {
+                    return Err(Diagnostic::error(
+                        func.pos,
+                        format!(
+                            "`{}` cannot take part in a balance carried from one period to the \
+                             next, which is worked out one period at a time",
+                            func.name
+                        ),
+                    ));
+                }
+                args.iter().try_for_each(|arg| self.check(arg))
+            }
+            ExprKind::List(_) | ExprKind::Range { .. } => Err(Diagnostic::error(
+                expr.pos,
+                "a list or a range cannot hold a balance carried from one period to the next",
+            )),
+            _ => expr
+                .children()
+                .into_iter()
+                .try_for_each(|child| self.check(child)),
+        }
+    }
 }
 
 /// Why a binding or size cannot have this name, if it cannot. The rules are those for defined
@@ -986,8 +1312,67 @@ mod tests {
         assert_eq!(
             errors("yup 0.1\na = b\nb = d + 1\nd = a\n"),
             [
-                "2:1: error: circular definition: a -> b -> d -> a; a balance carried from one \
-                 period to the next is not supported yet"
+                "2:1: error: circular definition: a -> b -> d -> a; a value cannot depend on \
+                 itself in the same period, but `lag 1 x from first` carries a balance from one \
+                 period to the next"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_cycle_through_a_lag_with_a_first_value_is_a_recurrence() {
+        let model = model(
+            "yup 0.1\nopening = lag 1 closing from 100\npaid = min 30 opening\nclosing = opening \
+             - paid\nafter = closing * 2\n",
+        );
+        let names = |bindings: &[usize]| -> Vec<&str> {
+            bindings
+                .iter()
+                .map(|&b| model.bindings[b].name.as_str())
+                .collect()
+        };
+        assert_eq!(names(&model.order), ["opening", "paid", "closing", "after"]);
+        assert_eq!(model.recurrences.len(), 1);
+        assert_eq!(
+            names(&model.recurrences[0].members),
+            ["opening", "paid", "closing"]
+        );
+        assert_eq!(model.bindings[model.recurrences[0].state].name, "closing");
+        let counter = self::model("yup 0.1\ncount = lag 1 count from 0 + 1\n");
+        assert_eq!(counter.recurrences[0].members, [0]);
+    }
+
+    #[test]
+    fn a_recurrence_works_one_period_at_a_time() {
+        assert_eq!(
+            errors("yup 0.1\nopening = lag 1 closing from 100\nclosing = opening - sum opening\n"),
+            [
+                "3:21: error: `sum` cannot take part in a balance carried from one period to the \
+              next, which is worked out one period at a time"
+            ]
+        );
+        assert_eq!(
+            errors("yup 0.1\nopening = lag 2 closing from 100\nclosing = opening - 1\n"),
+            [
+                "2:11: error: inside a cycle, `lag` carries the balance itself one period, with its \
+              first value: `lag 1 closing from first`"
+            ]
+        );
+        assert_eq!(
+            errors("yup 0.1\na = lag 1 b from 0\nb = lag 1 a from 0 + 1\n"),
+            [
+                "2:1: error: `a` and `b` are each carried from one period to the next in the same \
+              cycle; coupled balances are not supported yet"
+            ]
+        );
+        assert_eq!(
+            errors(
+                "yup 0.1\nopening = lag 1 closing from 100\nalso = lag 1 closing from 99\nclosing \
+                 = opening + also\n"
+            ),
+            [
+                "3:27: error: every `lag 1 closing from …` gives the same first value, and another \
+              gives `100`"
             ]
         );
     }

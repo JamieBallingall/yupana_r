@@ -411,6 +411,49 @@ names
         );
     }
 
+    const LOAN: &str = "\
+yup 0.1
+due : 'Due'
+due = [30, 30, 30, 30]
+opening : 'Opening'
+opening = lag 1 closing from 100
+paid : 'Paid'
+paid = min due opening
+closing : 'Closing'
+closing = opening - paid
+";
+
+    #[test]
+    fn a_recurrence_becomes_a_scan_with_the_cycle_written_in_place() {
+        let typed = text(LOAN, Step::Infer);
+        assert!(typed.contains("closing : [1, 4] 'Closing'"), "{typed}");
+        let listing = text(LOAN, Step::Lower);
+        for line in [
+            "  D3     =_xlfn.HSTACK(100,_xlfn.DROP(closing,,-1))",
+            "  D4     =IF(due<opening,due,opening)",
+            "  D5     =_xlfn.SCAN(100,_xlfn.SEQUENCE(1,COLUMNS(due)),_xlfn.LAMBDA(_xlpm._balance,\
+             _xlpm._period,_xlpm._balance-_xlfn.LET(_xlpm._a,INDEX(due,1,_xlpm._period),_xlpm._b,\
+             _xlpm._balance,IF(_xlpm._a<_xlpm._b,_xlpm._a,_xlpm._b))))",
+        ] {
+            assert!(listing.contains(line), "{line}\n{listing}");
+        }
+    }
+
+    #[test]
+    fn a_recurrence_needs_a_row_outside_it_to_give_its_length() {
+        let errors = show(
+            "yup 0.1\nopening = lag 1 closing from 100\nclosing = opening - 1\n",
+            Step::Infer,
+            &Inputs::new(),
+        )
+        .expect_err("no length");
+        assert_eq!(
+            errors[0].to_string(),
+            "3:1: error: nothing outside the cycle gives `closing` its length: it needs a row it \
+             uses period by period, such as a timeline"
+        );
+    }
+
     const SALES: &str = "\
 yup 0.1
 sales : 'Sales' Input

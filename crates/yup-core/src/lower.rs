@@ -18,12 +18,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cells::{absolute, cell_name, sheet_reference};
 use crate::csv::Field;
-use crate::diagnostic::Diagnostic;
+use crate::diagnostic::{Diagnostic, Pos};
 use crate::functions::Builtin;
 use crate::ground::{Cell as At, Grounded};
 use crate::infer::Typed;
 use crate::place::{LABEL_OFFSET, VALUE_COLUMN};
-use crate::resolve::{Binding, Model, Role, SheetItem, Symbol};
+use crate::resolve::{Binding, Model, Recurrence, Role, SheetItem, Symbol};
 use crate::syntax::{BinOp, Expr, ExprKind, ItemKind, Program};
 
 /// Names for the LET variables and LAMBDA parameters that the tool writes itself. Each starts
@@ -195,6 +195,27 @@ fn put(cells: &mut Cells, (row, column): At, value: Value, style: usize) {
     debug_assert!(previous.is_none(), "Check keeps cells apart");
 }
 
+/// What the names in an expression refer to while it is lowered.
+#[derive(Clone, Copy)]
+struct Scope<'a> {
+    /// The parameters of the function whose body this is; the file writes them `_xlpm.name`.
+    params: &'a [String],
+    /// The recurrence one period of which this is, if any.
+    period: Option<&'a Period>,
+}
+
+/// The whole workbook's scope: no parameters, and not inside a recurrence.
+const GLOBAL: Scope<'static> = Scope {
+    params: &[],
+    period: None,
+};
+
+/// A recurrence, as one period of it is lowered.
+struct Period {
+    members: BTreeSet<usize>,
+    state: usize,
+}
+
 struct Lowerer<'a> {
     program: &'a Program,
     model: &'a Model,
@@ -358,7 +379,7 @@ impl Lowerer<'_> {
                 }
             }
         } else {
-            let formula = self.formula(expr, &[])?;
+            let formula = self.definition_formula(binding)?;
             within_limits(b, &formula)?;
             put(
                 cells,
@@ -385,11 +406,104 @@ impl Lowerer<'_> {
         })
     }
 
+    /// The formula for a binding's definition. A balance carried from one period to the next is
+    /// worked out by a scan.
+    fn definition_formula(&self, binding: usize) -> Result<Formula, Diagnostic> {
+        match self.model.recurrence_of(binding) {
+            Some(recurrence) if recurrence.state == binding => self.scan(recurrence),
+            _ => self.formula(self.model.definition(self.program, binding), GLOBAL),
+        }
+    }
+
+    /// A balance carried from one period to the next, as a SCAN over the periods. The scan
+    /// starts from the balance's first value; at each period it works out the balance from the
+    /// balance a period back, with the other members of the cycle written in place, so that the
+    /// workbook holds no circular reference.
+    fn scan(&self, recurrence: &Recurrence) -> Result<Formula, Diagnostic> {
+        let state = recurrence.state;
+        let period = Period {
+            members: recurrence.members.iter().copied().collect(),
+            state,
+        };
+        let definitions = || {
+            recurrence
+                .members
+                .iter()
+                .map(|&member| self.model.definition(self.program, member))
+        };
+        let first = definitions()
+            .find_map(|definition| self.first_value(definition, state))
+            .expect("Resolve finds the balance's first value");
+        let driver = definitions()
+            .find_map(|definition| find(definition, self.typed.drivers[&state]))
+            .expect("Infer finds the part the scan runs over");
+        let periods = call(
+            "_xlfn.SEQUENCE",
+            &[
+                Formula::atom("1"),
+                call("COLUMNS", &[self.formula(driver, GLOBAL)?]),
+            ],
+        );
+        let scope = Scope {
+            params: &[],
+            period: Some(&period),
+        };
+        let body = self.formula(self.model.definition(self.program, state), scope)?;
+        let step = call(
+            "_xlfn.LAMBDA",
+            &[
+                Formula::atom(format!("_xlpm.{}", TOOL_NAMES[3])),
+                Formula::atom(format!("_xlpm.{}", TOOL_NAMES[4])),
+                body,
+            ],
+        );
+        Ok(call(
+            "_xlfn.SCAN",
+            &[self.formula(first, GLOBAL)?, periods, step],
+        ))
+    }
+
+    /// The first value in `lag 1 state from first`, if the expression holds one.
+    fn first_value<'e>(&self, expr: &'e Expr, state: usize) -> Option<&'e Expr> {
+        if let ExprKind::Apply {
+            func,
+            args,
+            seed: Some(seed),
+        } = &expr.kind
+            && func.name == "lag"
+            && matches!(&args[1].kind, ExprKind::Name(name)
+                if self.model.symbols.get(name) == Some(&Symbol::Binding(state)))
+        {
+            return Some(seed);
+        }
+        expr.children()
+            .into_iter()
+            .find_map(|child| self.first_value(child, state))
+    }
+
+    /// Whether an expression uses a member of the recurrence.
+    fn mentions(&self, expr: &Expr, period: &Period) -> bool {
+        match &expr.kind {
+            ExprKind::Name(name) => matches!(
+                self.model.symbols.get(name),
+                Some(Symbol::Binding(binding)) if period.members.contains(binding)
+            ),
+            _ => expr
+                .children()
+                .into_iter()
+                .any(|child| self.mentions(child, period)),
+        }
+    }
+
     /// A function, as a defined name whose value is a LAMBDA of its parameters. It can be
     /// called by name in the workbook as well as in the file.
     fn function(&self, binding: usize) -> Result<DefinedName, Diagnostic> {
         let b = &self.model.bindings[binding];
-        let body = self.formula(self.model.definition(self.program, binding), &b.params)?;
+        let scope = Scope {
+            params: &b.params,
+            period: None,
+        };
+        let body = self.formula(self.model.definition(self.program, binding), scope)?;
         let mut args: Vec<Formula> = b
             .params
             .iter()
@@ -421,9 +535,26 @@ impl Lowerer<'_> {
         }
     }
 
-    /// The formula for an expression. `scope` names the parameters of the function whose body
-    /// this is, if any; the file writes them with the prefix `_xlpm.`.
-    fn formula(&self, expr: &Expr, scope: &[String]) -> Result<Formula, Diagnostic> {
+    /// The formula for an expression, in `scope`.
+    fn formula(&self, expr: &Expr, scope: Scope<'_>) -> Result<Formula, Diagnostic> {
+        // Inside one period of a recurrence, a part outside the cycle is worked out whole, and
+        // read at the period if it is a row.
+        if let Some(period) = scope.period
+            && !self.mentions(expr, period)
+        {
+            let whole = self.formula(
+                expr,
+                Scope {
+                    period: None,
+                    ..scope
+                },
+            )?;
+            if !self.typed.rows.contains(&expr.pos) {
+                return Ok(whole);
+            }
+            let at = Formula::atom(format!("_xlpm.{}", TOOL_NAMES[4]));
+            return Ok(call("INDEX", &[whole, Formula::atom("1"), at]));
+        }
         let formula = match &expr.kind {
             ExprKind::Number { value, .. } => Formula::atom(number(*value)),
             ExprKind::Str(value) => {
@@ -439,12 +570,22 @@ impl Lowerer<'_> {
                 Formula::atom(format!("\"{}\"", value.replace('"', "\"\"")))
             }
             ExprKind::Bool(value) => Formula::atom(if *value { "TRUE" } else { "FALSE" }),
-            ExprKind::Name(name) if scope.contains(name) => Formula::atom(format!("_xlpm.{name}")),
+            ExprKind::Name(name) if scope.params.contains(name) => {
+                Formula::atom(format!("_xlpm.{name}"))
+            }
             ExprKind::Name(name) => match self.model.symbols.get(name) {
+                // Another member of the cycle, in the same period: its definition, in place.
+                Some(Symbol::Binding(binding))
+                    if scope
+                        .period
+                        .is_some_and(|period| period.members.contains(binding)) =>
+                {
+                    self.formula(self.model.definition(self.program, *binding), scope)?
+                }
                 Some(Symbol::Binding(binding))
                     if self.model.bindings[*binding].role == Role::Local =>
                 {
-                    self.formula(self.model.definition(self.program, *binding), &[])?
+                    self.definition_formula(*binding)?
                 }
                 Some(Symbol::Binding(_)) => Formula::atom(name),
                 Some(Symbol::Size(var)) => Formula::atom(
@@ -526,7 +667,7 @@ impl Lowerer<'_> {
         builtin: Builtin,
         args: &[Expr],
         seed: Option<&Expr>,
-        scope: &[String],
+        scope: Scope<'_>,
     ) -> Result<Formula, Diagnostic> {
         let arg = |index: usize| self.formula(&args[index], scope);
         let drop_columns = |x: Formula, columns: i64| {
@@ -536,6 +677,16 @@ impl Lowerer<'_> {
             )
         };
         let formula = match builtin {
+            // Inside one period of a recurrence, the balance a period back is the scan's own.
+            Builtin::Lag
+                if seed.is_some()
+                    && scope.period.is_some_and(|period| {
+                        matches!(&args[1].kind, ExprKind::Name(name)
+                            if self.model.symbols.get(name) == Some(&Symbol::Binding(period.state)))
+                    }) =>
+            {
+                Formula::atom(format!("_xlpm.{}", TOOL_NAMES[3]))
+            }
             Builtin::Lag => {
                 let periods = args[0]
                     .integer()
@@ -617,6 +768,16 @@ impl Lowerer<'_> {
         };
         Ok(formula)
     }
+}
+
+/// The expression at `pos` within `expr`.
+fn find(expr: &Expr, pos: Pos) -> Option<&Expr> {
+    if expr.pos == pos {
+        return Some(expr);
+    }
+    expr.children()
+        .into_iter()
+        .find_map(|child| find(child, pos))
 }
 
 /// Checks a binding's formula against the spreadsheet app's limits on length and nesting.

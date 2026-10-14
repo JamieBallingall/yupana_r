@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::diagnostic::{Diagnostic, Pos};
 use crate::functions::Builtin;
-use crate::resolve::{Model, Role, Symbol};
+use crate::resolve::{Model, Recurrence, Role, Symbol};
 use crate::size::SizeExpr;
 use crate::syntax::{Expr, ExprKind, Ident, Program, Signature, SizeKind, SizeSyntax};
 
@@ -70,6 +70,12 @@ pub struct Var {
 pub struct Typed {
     pub vars: Vec<Var>,
     pub shapes: Vec<Shape>,
+    /// The parts of a recurrence that lie outside its cycle and are rows, by position: inside the
+    /// scan that works the recurrence out, they are read one period at a time.
+    pub rows: BTreeSet<Pos>,
+    /// For each balance carried from one period to the next, the part outside its cycle whose
+    /// length the scan runs over.
+    pub drivers: BTreeMap<usize, Pos>,
 }
 
 impl Typed {
@@ -116,6 +122,8 @@ struct Infer<'a> {
     /// The shapes of the parameters of the functions being called, innermost last. A function
     /// body sees its own parameters only.
     params: Vec<BTreeMap<String, Shape>>,
+    rows: BTreeSet<Pos>,
+    drivers: BTreeMap<usize, Pos>,
 }
 
 /// Infers the shape of every binding in `model`.
@@ -146,9 +154,16 @@ pub fn infer(program: &Program, model: &Model) -> Result<Typed, Vec<Diagnostic>>
         errors: Vec::new(),
         current: 0,
         params: Vec::new(),
+        rows: BTreeSet::new(),
+        drivers: BTreeMap::new(),
     };
     for &binding in &model.order {
-        infer.binding(binding);
+        match model.recurrence_of(binding) {
+            // A recurrence's members come together in the order, and are inferred together.
+            Some(recurrence) if recurrence.members[0] == binding => infer.recurrence(recurrence),
+            Some(_) => {}
+            None => infer.binding(binding),
+        }
     }
     infer.finish()
 }
@@ -509,6 +524,121 @@ impl Infer<'_> {
         }
     }
 
+    /// Infers a recurrence, in two passes. First the balance, where it is lagged, is taken as a
+    /// single value, which stretches to fit anything: that gives the balance its shape from what
+    /// lies outside the cycle. Then every member is inferred again, with that shape for the
+    /// balance and with its signature checked, and the balance must come out the same.
+    fn recurrence(&mut self, recurrence: &Recurrence) {
+        let state = recurrence.state;
+        let name = &self.model.bindings[state].name;
+        let pos = self.model.bindings[state].pos;
+        let vars = self.vars.len();
+        let errors = self.errors.len();
+        let fail = |infer: &mut Self, message: String| {
+            infer.errors.push(Diagnostic::error(pos, message));
+            for &member in &recurrence.members {
+                infer.shapes[member] = None;
+            }
+        };
+        self.shapes[state] = Some(Shape::scalar());
+        for &member in &recurrence.members {
+            self.current = member;
+            match self.shape(self.model.definition(self.program, member)) {
+                Ok(shape) => self.shapes[member] = Some(shape),
+                Err(error) => {
+                    self.errors.extend(error);
+                    return fail(self, format!("`{name}` cannot be worked out"));
+                }
+            }
+        }
+        if self.vars.len() != vars {
+            self.vars.truncate(vars);
+            return fail(
+                self,
+                format!(
+                    "a range made with `..` cannot be inside the cycle that carries `{name}`; \
+                     make it a binding of its own, outside"
+                ),
+            );
+        }
+        let assumed = self.shapes[state].clone().expect("the balance has a shape");
+        for &member in &recurrence.members {
+            self.binding(member);
+        }
+        if self.errors.len() != errors {
+            return fail(self, format!("`{name}` cannot be worked out"));
+        }
+        let settled = self.shapes[state].clone().expect("the balance has a shape");
+        if !self.same_shape(&assumed, &settled) {
+            return fail(self, format!("the size of `{name}` does not settle"));
+        }
+        if !self.is_one(&settled.rows.size) {
+            return fail(
+                self,
+                format!(
+                    "a balance carried from one period to the next is one row, and `{name}` has \
+                     {} rows",
+                    self.show(&settled.rows.size)
+                ),
+            );
+        }
+        let members: BTreeSet<usize> = recurrence.members.iter().copied().collect();
+        let mut driver = None;
+        for &member in &recurrence.members {
+            let definition = self.model.definition(self.program, member);
+            self.outside_rows(definition, &members, &mut driver);
+        }
+        match driver {
+            Some(driver) => {
+                self.drivers.insert(state, driver);
+            }
+            None => fail(
+                self,
+                format!(
+                    "nothing outside the cycle gives `{name}` its length: it needs a row it uses \
+                     period by period, such as a timeline"
+                ),
+            ),
+        }
+    }
+
+    /// Whether an expression uses a binding in `members`.
+    fn mentions(&self, expr: &Expr, members: &BTreeSet<usize>) -> bool {
+        match &expr.kind {
+            ExprKind::Name(name) => matches!(
+                self.model.symbols.get(name),
+                Some(Symbol::Binding(binding)) if members.contains(binding)
+            ),
+            _ => expr
+                .children()
+                .into_iter()
+                .any(|child| self.mentions(child, members)),
+        }
+    }
+
+    /// Finds the largest parts of a member's definition that lie outside the cycle, and records
+    /// those that are rows. The first is the one whose length the scan runs over.
+    fn outside_rows(&mut self, expr: &Expr, members: &BTreeSet<usize>, driver: &mut Option<Pos>) {
+        if !self.mentions(expr, members) {
+            if let Ok(shape) = self.shape(expr)
+                && !self.is_one(&shape.columns.size)
+            {
+                self.rows.insert(expr.pos);
+                driver.get_or_insert(expr.pos);
+            }
+            return;
+        }
+        match &expr.kind {
+            // The balance a period back is the scan's own; its first value starts the scan.
+            ExprKind::Apply { func, .. } if func.name == "lag" => {}
+            _ => {
+                for child in expr.children() {
+                    self.outside_rows(child, members, driver);
+                }
+            }
+        }
+    }
+
     fn same_shape(&self, a: &Shape, b: &Shape) -> bool {
         let same = |a: &Extent, b: &Extent| a.start == b.start && self.same(&a.size, &b.size);
         same(&a.rows, &b.rows) && same(&a.columns, &b.columns)
@@ -745,7 +875,12 @@ impl Infer<'_> {
                 kind: var.kind,
             })
             .collect();
-        Ok(Typed { vars, shapes })
+        Ok(Typed {
+            vars,
+            shapes,
+            rows: self.rows,
+            drivers: self.drivers,
+        })
     }
 }
 

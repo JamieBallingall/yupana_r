@@ -45,7 +45,7 @@ things silently or bury the user in warnings.
 
 `yup build` writes the workbook, by default beside the `.yup` file. `yup show <step>` prints what
 any step makes of a file: the steps up to Check print a `.yup` file with more worked out, Lower
-prints the cells, and Package the parts of the xlsx file. [examples](examples) has four files to
+prints the cells, and Package the parts of the xlsx file. [examples](examples) has five files to
 start from.
 
 ## Stage 1: scope
@@ -164,6 +164,11 @@ provisional, and names the open question it answers where there is one.
 - **Functions.** A definition with parameters, `discount rate years = …`, is a function. Its size
   is worked out at each call from the arguments' sizes, and it becomes a defined name holding a
   LAMBDA, so the workbook can call it too.
+- **Recurrences.** A cycle broken by `lag 1 x from first` carries the balance `x` from one period
+  to the next. Its size is found in two passes: first with the lagged balance taken as a single
+  value, which stretches to fit, then again with the size that gives. The balance is written as a
+  SCAN whose step has the rest of the cycle written in place, so the workbook holds no circular
+  reference; a row outside the cycle that it uses gives the SCAN its length.
 - **`lag`** works along columns. `from` gives the first values of `lag 1` only (question 1).
 - **Names** of bindings and sizes are lower case ASCII and follow the rules for defined names: not
   a cell (`tax2026`), not R1C1 (`r`, `c1`, `rc`), not a function or keyword (question 2).
@@ -304,6 +309,13 @@ payment: =opening# - closing#
 That rewrite is a compiler transformation (question 15). *To verify:* SCAN's accumulator must be a
 single value, so two or more coupled balances (a revolving facility and a cash balance, say) cannot
 share one SCAN. That case would need REDUCE with stacking.
+
+*Built for 0.1:* a cycle is allowed when `lag 1 x from first` breaks it, and has one balance. The
+balance is written as one SCAN over the periods, whose step works one period out with the other
+members of the cycle written in place; the other members are ordinary formulas that use the
+balance. In [the loan example](examples/loan.yup) the closing balance is
+`SCAN(amount,SEQUENCE(1,COLUMNS(scheduled)),LAMBDA(_balance,_period,_balance-…))`, and the
+spreadsheet app works it out as intended. Coupled balances are refused.
 
 ### Elementwise or aggregate
 
@@ -499,7 +511,8 @@ reasons.
 14. **Fixed sizes:** does a range of `Fixed` size spill, or is it filled with one formula per cell?
     *0.1: everything spills.*
 15. **Recurrences under spill:** the rewrite into SCAN or REDUCE, and what to do with coupled
-    balances. *0.1: not built; a recurrence is refused as a circular definition.*
+    balances. *0.1: one balance per cycle, written as a SCAN; coupled balances are refused, and
+    so is anything in the cycle that does not work position by position.*
 16. **Signature and layout syntax:** the order and form of size, span, label, anchor and
     attributes in a signature; how blocks, orientation (across or down), two-dimensional blocks
     and pinned cells are written; and how an elaborated file writes spans and numeric anchors.
