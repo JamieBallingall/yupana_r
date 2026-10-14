@@ -3,8 +3,8 @@
 //! A statement that does not parse is reported and skipped, so that one run reports every line
 //! that is wrong rather than only the first.
 //!
-//! Precedence, from loosest to tightest: `if` and `..`; comparisons; `++`; `+` and `-`; `*` and
-//! `/`; negation; `^`; application of a function to its arguments.
+//! Precedence, from loosest to tightest: `if` and `..`; `||`; `&&`; comparisons; `++`; `+` and
+//! `-`; `*` and `/`; negation; `^`; application of a function to its arguments.
 
 use crate::diagnostic::{Diagnostic, Pos};
 use crate::lexer::{Lexeme, Token, lex};
@@ -480,12 +480,12 @@ impl Parser {
     }
 
     fn expr(&mut self) -> Parsed<Expr> {
-        let first = self.comparison()?;
+        let first = self.disjunction()?;
         if *self.peek() != Token::DotDot {
             return Ok(first);
         }
         let pos = self.advance().pos;
-        let last = self.comparison()?;
+        let last = self.disjunction()?;
         if *self.peek() == Token::DotDot {
             return Err(Diagnostic::error(self.pos(), "ranges do not chain"));
         }
@@ -496,6 +496,26 @@ impl Parser {
                 last: Box::new(last),
             },
         })
+    }
+
+    fn disjunction(&mut self) -> Parsed<Expr> {
+        let left = self.conjunction()?;
+        if *self.peek() != Token::OrOr {
+            return Ok(left);
+        }
+        let pos = self.advance().pos;
+        let right = self.disjunction()?;
+        Ok(binary(BinOp::Or, left, right, pos))
+    }
+
+    fn conjunction(&mut self) -> Parsed<Expr> {
+        let left = self.comparison()?;
+        if *self.peek() != Token::AndAnd {
+            return Ok(left);
+        }
+        let pos = self.advance().pos;
+        let right = self.conjunction()?;
+        Ok(binary(BinOp::And, left, right, pos))
     }
 
     fn comparison(&mut self) -> Parsed<Expr> {

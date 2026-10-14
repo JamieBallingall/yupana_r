@@ -411,7 +411,9 @@ impl Infer<'_> {
                     )
                 })
             }
-            Builtin::Abs | Builtin::Exp | Builtin::Ln | Builtin::Sqrt => self.shape(&args[0]),
+            Builtin::Abs | Builtin::Exp | Builtin::Ln | Builtin::Sqrt | Builtin::Not => {
+                self.shape(&args[0])
+            }
             Builtin::Round => {
                 let digits = self.shape(&args[0])?;
                 if !self.is_scalar(&digits) {

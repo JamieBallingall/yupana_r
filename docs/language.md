@@ -102,6 +102,8 @@ Operators, from loosest to tightest:
 | Operators | Grouping |
 |---|---|
 | `if … then … else …`, `..` | |
+| `\|\|` (logical or) | right |
+| `&&` (logical and) | right |
 | `==`, `/=`, `<`, `<=`, `>`, `>=` | do not chain |
 | `++` (joins text) | right |
 | `+`, `-` | left |
@@ -129,12 +131,17 @@ Arguments that say how much come first, and the data last.
 | `sum_rows x` | the sum of each row, as one column | `BYROW(x,LAMBDA(x,SUM(x)))` |
 | `min a b`, `max a b` | the smaller or larger at each position | `IF(a<b,a,b)` |
 | `abs x`, `exp x`, `ln x`, `sqrt x` | the function at each position | `ABS(x)` and so on |
+| `not x` | logical not at each position | `NOT(x)` |
 | `round d x` | x rounded to d digits | `ROUND(x,d)` |
 | `transpose x` | rows and columns swapped | `TRANSPOSE(x)` |
 | `lookup k ks vs` | the value beside each key, shaped as `k` | `XLOOKUP(k,ks,vs)` |
 
 `min` and `max` work position by position, like Haskell's; `minimum` and `maximum` reduce a range
 to one value.
+
+`&&` and `||` work position by position too. The app's AND and OR reduce a range to one value,
+so they are written with arithmetic on the logicals: `a && b` as `(a)*(b)<>0`, and `a || b` as
+`(a)+(b)<>0`.
 
 ## Sizes and spans
 

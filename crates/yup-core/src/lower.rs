@@ -137,7 +137,12 @@ fn call(name: &str, args: &[Formula]) -> Formula {
 }
 
 fn binary(op: BinOp, left: &Formula, right: &Formula) -> Formula {
+    let zero = Formula::atom("0");
     let (symbol, precedence) = match op {
+        // The app's AND and OR reduce whole ranges to one value, so logical and and or at each
+        // position are written with arithmetic on the logicals.
+        BinOp::And => return binary(BinOp::Ne, &binary(BinOp::Mul, left, right), &zero),
+        BinOp::Or => return binary(BinOp::Ne, &binary(BinOp::Add, left, right), &zero),
         BinOp::Add => ("+", ADDITIVE),
         BinOp::Sub => ("-", ADDITIVE),
         BinOp::Mul => ("*", MULTIPLICATIVE),
@@ -525,6 +530,7 @@ impl Lowerer<'_> {
             Builtin::Exp => call("EXP", &[arg(0)?]),
             Builtin::Ln => call("LN", &[arg(0)?]),
             Builtin::Sqrt => call("SQRT", &[arg(0)?]),
+            Builtin::Not => call("NOT", &[arg(0)?]),
             Builtin::Round => call("ROUND", &[arg(1)?, arg(0)?]),
             Builtin::Transpose => call("TRANSPOSE", &[arg(0)?]),
             Builtin::Lookup => call("_xlfn.XLOOKUP", &[arg(0)?, arg(1)?, arg(2)?]),

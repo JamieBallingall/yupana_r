@@ -136,28 +136,43 @@ pub fn quote_string(text: &str) -> String {
 /// Prints an expression with as few parentheses as `.yup`'s precedence allows.
 pub fn expression(expr: &Expr) -> String {
     let mut out = String::new();
-    write_expr(&mut out, expr, 0);
+    write_expr(&mut out, expr, LOOSE);
     out
 }
 
-/// How tightly an expression binds; it needs parentheses where its context asks for more.
+// How tightly each form binds, loosest first. A form needs parentheses where its context asks
+// for a tighter one.
+const LOOSE: u8 = 0;
+const OR: u8 = 1;
+const AND: u8 = 2;
+const COMPARE: u8 = 3;
+const CONCAT: u8 = 4;
+const ADDITIVE: u8 = 5;
+const MULTIPLICATIVE: u8 = 6;
+const NEGATION: u8 = 7;
+const POWER: u8 = 8;
+const APPLICATION: u8 = 9;
+const ATOM: u8 = 10;
+
 fn precedence(expr: &Expr) -> u8 {
     match &expr.kind {
-        ExprKind::If { .. } | ExprKind::Range { .. } => 0,
+        ExprKind::If { .. } | ExprKind::Range { .. } => LOOSE,
         ExprKind::Binary { op, .. } => match op {
-            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => 1,
-            BinOp::Concat => 2,
-            BinOp::Add | BinOp::Sub => 3,
-            BinOp::Mul | BinOp::Div => 4,
-            BinOp::Pow => 6,
+            BinOp::Or => OR,
+            BinOp::And => AND,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => COMPARE,
+            BinOp::Concat => CONCAT,
+            BinOp::Add | BinOp::Sub => ADDITIVE,
+            BinOp::Mul | BinOp::Div => MULTIPLICATIVE,
+            BinOp::Pow => POWER,
         },
-        ExprKind::Neg(_) => 5,
-        ExprKind::Apply { .. } => 7,
+        ExprKind::Neg(_) => NEGATION,
+        ExprKind::Apply { .. } => APPLICATION,
         ExprKind::Number { .. }
         | ExprKind::Str(_)
         | ExprKind::Bool(_)
         | ExprKind::Name(_)
-        | ExprKind::List(_) => 8,
+        | ExprKind::List(_) => ATOM,
     }
 }
 
@@ -175,26 +190,30 @@ fn write_expr(out: &mut String, expr: &Expr, context: u8) {
             out.push_str(&func.name);
             for arg in args {
                 out.push(' ');
-                write_expr(out, arg, 8);
+                write_expr(out, arg, ATOM);
             }
             if let Some(seed) = seed {
                 out.push_str(" from ");
-                write_expr(out, seed, 8);
+                write_expr(out, seed, ATOM);
             }
         }
         ExprKind::Neg(operand) => {
             out.push('-');
-            write_expr(out, operand, 6);
+            write_expr(out, operand, POWER);
         }
         ExprKind::Binary { op, left, right } => {
-            // Comparisons do not chain, `++` and `^` group to the right, and the rest to the
-            // left.
+            // Comparisons do not chain; `||`, `&&`, `++` and `^` group to the right, and the
+            // rest to the left.
             let (left_context, right_context) = match op {
-                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => (2, 2),
-                BinOp::Concat => (3, 2),
-                BinOp::Add | BinOp::Sub => (3, 4),
-                BinOp::Mul | BinOp::Div => (4, 5),
-                BinOp::Pow => (7, 5),
+                BinOp::Or => (AND, OR),
+                BinOp::And => (COMPARE, AND),
+                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                    (CONCAT, CONCAT)
+                }
+                BinOp::Concat => (ADDITIVE, CONCAT),
+                BinOp::Add | BinOp::Sub => (ADDITIVE, MULTIPLICATIVE),
+                BinOp::Mul | BinOp::Div => (MULTIPLICATIVE, NEGATION),
+                BinOp::Pow => (APPLICATION, NEGATION),
             };
             write_expr(out, left, left_context);
             out.push(' ');
@@ -204,11 +223,11 @@ fn write_expr(out: &mut String, expr: &Expr, context: u8) {
         }
         ExprKind::If { cond, then, other } => {
             out.push_str("if ");
-            write_expr(out, cond, 0);
+            write_expr(out, cond, LOOSE);
             out.push_str(" then ");
-            write_expr(out, then, 0);
+            write_expr(out, then, LOOSE);
             out.push_str(" else ");
-            write_expr(out, other, 0);
+            write_expr(out, other, LOOSE);
         }
         ExprKind::List(rows) => {
             out.push('[');
@@ -220,15 +239,15 @@ fn write_expr(out: &mut String, expr: &Expr, context: u8) {
                     if v > 0 {
                         out.push_str(", ");
                     }
-                    write_expr(out, value, 0);
+                    write_expr(out, value, LOOSE);
                 }
             }
             out.push(']');
         }
         ExprKind::Range { first, last } => {
-            write_expr(out, first, 1);
+            write_expr(out, first, OR);
             out.push_str(" .. ");
-            write_expr(out, last, 1);
+            write_expr(out, last, OR);
         }
     }
     if parens {
@@ -265,6 +284,8 @@ mod tests {
             "yup 0.1\nx = if a > b then 1 .. n else f (g x) y\n",
             "yup 0.1\nx = 1 + (if c then 2 else 3)\n",
             "yup 0.1\nx = (a ++ b) ++ c ++ d\n",
+            "yup 0.1\nx = a || b && c || not d && (e || f)\n",
+            "yup 0.1\nx = (a || b) .. c\n",
             "yup 0.1\nx = lag 1 (a + b) from (c * 2)\n",
             "yup 0.1\nx : [s + 4, 2 * n - 1] from [0, 1] @ (4 + s, 5) 'L' Format \"0%\" Bold\n",
         ];

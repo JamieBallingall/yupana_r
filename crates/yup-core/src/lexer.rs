@@ -34,6 +34,8 @@ pub enum Token {
     At,
     Plus,
     PlusPlus,
+    AndAnd,
+    OrOr,
     Minus,
     Star,
     Slash,
@@ -70,6 +72,8 @@ impl Token {
             Token::At => "@",
             Token::Plus => "+",
             Token::PlusPlus => "++",
+            Token::AndAnd => "&&",
+            Token::OrOr => "||",
             Token::Minus => "-",
             Token::Star => "*",
             Token::Slash => "/",
@@ -469,11 +473,17 @@ impl Lexer {
                     "`#` does not start a comment in .yup; comments start with `//`",
                 ));
             }
+            '&' if next == Some('&') => two(Token::AndAnd),
             '&' => {
                 return Err(Diagnostic::error(
                     pos,
-                    "`&` is the spreadsheet app's; in .yup, text is joined with `++`",
+                    "`&` is the spreadsheet app's; in .yup, text is joined with `++`, and `&&` \
+                     is logical and",
                 ));
+            }
+            '|' if next == Some('|') => two(Token::OrOr),
+            '|' => {
+                return Err(Diagnostic::error(pos, "a single `|`; logical or is `||`"));
             }
             '{' | '}' => {
                 return Err(Diagnostic::error(
@@ -652,7 +662,8 @@ mod tests {
         );
         assert_eq!(
             error("a & b"),
-            "1:3: error: `&` is the spreadsheet app's; in .yup, text is joined with `++`"
+            "1:3: error: `&` is the spreadsheet app's; in .yup, text is joined with `++`, and \
+             `&&` is logical and"
         );
     }
 

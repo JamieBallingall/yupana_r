@@ -171,7 +171,7 @@ provisional, and names the open question it answers where there is one.
   empty, and position 0 of a range's columns is column D. Headings are bold.
 - **Functions.** `min` and `max` work position by position, and `minimum` and `maximum` reduce, as
   in Haskell. Arguments that say how much come first (`lag 1 x`, `round 2 x`). Text is joined
-  with `++`. There is no logical `and` or `or` yet.
+  with `++`. Logical `&&`, `||` and `not` work position by position too.
 - **Inputs** are literals or lists of literals, written in blue, as financial models usually show
   inputs. Input files (question 4) are not built yet.
 - **Number formats** are checked conservatively before they reach the workbook; literal text in a
@@ -470,7 +470,7 @@ reasons.
    variable. *0.1: not built; inputs are written in the file.*
 5. **Dates:** a literal syntax, written as serial numbers in the 1900 date system.
 6. **Logicals and errors:** whether error literals exist, and how `and`, `or` and `not` are
-   written. *0.1: `true` and `false`.*
+   written. *0.1: `true` and `false`, and `&&`, `||` and `not`.*
 7. **Formatting syntax:** inline on each range, named styles applied to ranges, or both, and the
    defaults. *0.1: inline, `Format "…"`, `Bold` and `Italic` in the signature.*
 8. **Validity without the app:** schema validation in the tests and reading by independent

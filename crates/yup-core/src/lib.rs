@@ -334,6 +334,19 @@ names
     }
 
     #[test]
+    fn logical_operators_work_position_by_position() {
+        let source = "yup 0.1\nyears = 1 .. 4\nmiddle : 'Middle'\nmiddle = years > 1 && years < \
+                      4 || not (years /= 2)\n";
+        let listing = text(source, Step::Lower);
+        assert!(
+            listing.contains(
+                "=((_xlfn.SEQUENCE(1,4)>1)*(_xlfn.SEQUENCE(1,4)<4)<>0)+NOT(_xlfn.SEQUENCE(1,4)<>2)<>0"
+            ),
+            "{listing}"
+        );
+    }
+
+    #[test]
     fn a_local_binding_is_written_into_the_formulas_that_use_it() {
         let source = "yup 0.1\nyears = 1 .. 4\nprior = lag 1 years\nratio : 'Ratio'\nratio = \
                       tail years / prior\nlow : 'Low'\nlow = min (years * 2) 3\n";
