@@ -26,22 +26,8 @@ pub use diagnostic::{Diagnostic, Pos, Severity};
 
 use elaborate::{Detail, elaborate};
 
-/// The output of [`compile`] until the language is specified.
-pub const NOT_YET_IMPLEMENTED: &str = "Not yet implemented\n";
-
-/// Turns a `.yup` source into the bytes of an xlsx workbook.
-///
-/// Nothing is implemented yet: the input is ignored, and the output is always
-/// [`NOT_YET_IMPLEMENTED`]. The input is bytes rather than text because the
-/// caller should not have to decide what a valid source looks like.
-///
-/// ```
-/// let output = yup_core::compile(b"anything at all");
-/// assert_eq!(output, b"Not yet implemented\n");
-/// ```
-pub fn compile(_source: &[u8]) -> Vec<u8> {
-    NOT_YET_IMPLEMENTED.as_bytes().to_vec()
-}
+/// The version of the `.yup` language this crate reads, as a file's first line gives it.
+pub const LANGUAGE_VERSION: &str = parser::VERSION;
 
 /// The steps from a `.yup` file to an xlsx workbook, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -1,2 +1,4 @@
 /target/
 HUMAN.md
+# Workbooks are generated and never committed.
+*.xlsx

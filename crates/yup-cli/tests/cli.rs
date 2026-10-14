@@ -1,10 +1,12 @@
-//! Runs the built `yup` binary as a user would, through its standard streams.
+//! Runs the built `yup` binary as a user would: through its arguments and standard streams.
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::path::PathBuf;
+use std::process::{Command, Output, Stdio};
 
-fn run_yup(input: &[u8]) -> std::process::Output {
+fn yup(args: &[&str], input: &[u8]) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_yup"))
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -21,12 +23,78 @@ fn run_yup(input: &[u8]) -> std::process::Output {
         .expect("the child runs to completion")
 }
 
+fn text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).replace("\r\n", "\n")
+}
+
+const SOURCE: &str = "yup 0.1\nrate : 'Rate' Input\nrate = 0.05\nyears = 1 .. 3\ngrowth : \
+                      'Growth'\ngrowth = (1 + rate) ^ years\n";
+
 #[test]
-fn any_input_gives_the_placeholder() {
-    for input in [&b""[..], b"Revenue = 100\n", &[0xff, 0x00, 0xfe]] {
-        let output = run_yup(input);
-        assert!(output.status.success());
-        assert_eq!(output.stdout, yup_core::NOT_YET_IMPLEMENTED.as_bytes());
-        assert!(output.stderr.is_empty());
-    }
+fn show_prints_what_a_step_makes_of_the_file() {
+    let output = yup(&["show", "place", "-"], SOURCE.as_bytes());
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "yup 0.1\nsheet 'Sheet1'\nrate : [1, 1] 'Rate' @ (2, 4) Input\nrate = 0.05\nyears : [1, \
+         3]\nyears = 1 .. 3\ngrowth : [1, 3] 'Growth' @ (3, 4)\ngrowth = (1 + rate) ^ years\n"
+    );
+}
+
+#[test]
+fn build_writes_a_workbook_to_standard_output() {
+    let output = yup(&["build", "-", "-o", "-"], SOURCE.as_bytes());
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert!(output.stdout.starts_with(b"PK\x03\x04"));
+}
+
+#[test]
+fn build_writes_a_workbook_file() {
+    let path: PathBuf = [
+        env!("CARGO_TARGET_TMPDIR"),
+        "build_writes_a_workbook_file.xlsx",
+    ]
+    .iter()
+    .collect();
+    let path = path.to_string_lossy().into_owned();
+    let output = yup(&["build", "-", "-o", &path], SOURCE.as_bytes());
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stderr), format!("yup: wrote {path}\n"));
+    let bytes = std::fs::read(&path).expect("the workbook is written");
+    assert!(bytes.starts_with(b"PK\x03\x04"));
+}
+
+#[test]
+fn problems_are_reported_with_file_line_and_column() {
+    let output = yup(&["check", "-"], b"yup 0.1\nx = y + 1\nz = 1 ++\n");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        text(&output.stderr),
+        "<stdin>:3:9: error: expected a value, found the end of the line\n"
+    );
+    let output = yup(&["check", "-"], b"yup 0.1\nx = y + 1\n");
+    assert_eq!(
+        text(&output.stderr),
+        "<stdin>:2:5: error: unknown name `y`\n"
+    );
+}
+
+#[test]
+fn a_file_that_is_not_utf8_is_refused_where_it_goes_wrong() {
+    let output = yup(&["check", "-"], b"yup 0.1\nx = '\xff'\n");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        text(&output.stderr),
+        "<stdin>:2:6: error: the file is not valid UTF-8 here\n"
+    );
+}
+
+#[test]
+fn a_wrong_command_line_prints_the_usage() {
+    let output = yup(&["show", "nowhere", "-"], b"");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(text(&output.stderr).starts_with(
+        "yup: unknown step `nowhere`; the steps are parse, resolve, infer, place, ground, check, \
+         lower, package\n\nusage:"
+    ));
 }
