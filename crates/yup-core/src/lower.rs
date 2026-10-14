@@ -41,11 +41,14 @@ pub struct Workbook {
     pub styles: Vec<Style>,
 }
 
-/// One sheet's cells, by `(row, column)`, and its column widths.
+/// One sheet's cells, by `(row, column)`, its row styles and its column widths.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SheetCells {
     pub name: String,
     pub cells: BTreeMap<(u32, u32), Cell>,
+    /// The style of each row a formula with a style spills along. The cells a formula spills
+    /// into are not in the file, so they take the style of their row.
+    pub row_styles: BTreeMap<u32, usize>,
     pub widths: BTreeMap<u32, f64>,
 }
 
@@ -208,6 +211,7 @@ pub fn lower(
     let mut names = Vec::new();
     for sheet in &model.sheets {
         let mut cells = Cells::new();
+        let mut row_styles = BTreeMap::new();
         for item in &sheet.items {
             match *item {
                 SheetItem::Heading(index) => {
@@ -227,7 +231,7 @@ pub fn lower(
                 }
                 SheetItem::Gap(_) => {}
                 SheetItem::Binding(binding) => {
-                    match lowerer.binding(binding, &sheet.name, &mut cells) {
+                    match lowerer.binding(binding, &sheet.name, &mut cells, &mut row_styles) {
                         Ok(name) => names.push(name),
                         Err(error) => errors.push(error),
                     }
@@ -238,6 +242,7 @@ pub fn lower(
         sheets.push(SheetCells {
             name: sheet.name.clone(),
             cells,
+            row_styles,
             widths,
         });
     }
@@ -268,6 +273,7 @@ impl Lowerer<'_> {
         binding: usize,
         sheet: &str,
         cells: &mut Cells,
+        row_styles: &mut BTreeMap<u32, usize>,
     ) -> Result<DefinedName, Diagnostic> {
         let b = &self.model.bindings[binding];
         let sig = self
@@ -334,6 +340,18 @@ impl Lowerer<'_> {
                 Value::Formula(formula.text),
                 value_style,
             );
+            // A range of unknown height takes its style in its anchor cell only.
+            let shape = &self.grounded.shapes[binding];
+            let one_cell = shape.rows.size.as_constant() == Some(1)
+                && shape.columns.size.as_constant() == Some(1);
+            if value_style != 0
+                && !one_cell
+                && let Some(rows) = shape.rows.size.as_constant()
+            {
+                for spilled in row..row + rows {
+                    row_styles.entry(to_u32(spilled)).or_insert(value_style);
+                }
+            }
         }
         Ok(DefinedName {
             name: b.name.clone(),
@@ -564,6 +582,24 @@ fn widths(cells: &Cells) -> BTreeMap<u32, f64> {
     widths
 }
 
+/// A style in words, for a listing.
+fn notes(style: &Style) -> Vec<String> {
+    let mut notes = Vec::new();
+    if style.input {
+        notes.push("input".to_string());
+    }
+    if style.bold {
+        notes.push("bold".to_string());
+    }
+    if style.italic {
+        notes.push("italic".to_string());
+    }
+    if let Some(format) = &style.format {
+        notes.push(format!("format \"{format}\""));
+    }
+    notes
+}
+
 /// The cells and names of a workbook, as text, for reading what Lower produced.
 pub fn listing(workbook: &Workbook) -> String {
     let mut out = String::new();
@@ -576,26 +612,17 @@ pub fn listing(workbook: &Workbook) -> String {
                 Value::Bool(value) => String::from(if *value { "TRUE" } else { "FALSE" }),
                 Value::Formula(formula) => format!("={formula}"),
             };
-            let style = &workbook.styles[cell.style];
-            let mut notes = Vec::new();
-            if style.input {
-                notes.push("input".to_string());
-            }
-            if style.bold {
-                notes.push("bold".to_string());
-            }
-            if style.italic {
-                notes.push("italic".to_string());
-            }
-            if let Some(format) = &style.format {
-                notes.push(format!("format \"{format}\""));
-            }
+            let notes = notes(&workbook.styles[cell.style]);
             let notes = if notes.is_empty() {
                 String::new()
             } else {
                 format!("  [{}]", notes.join(", "))
             };
             out.push_str(&format!("  {:<6} {value}{notes}\n", cell_name(row, column)));
+        }
+        for (row, style) in &sheet.row_styles {
+            let notes = notes(&workbook.styles[*style]).join(", ");
+            out.push_str(&format!("  row {row}  [{notes}]\n"));
         }
     }
     out.push_str("names\n");

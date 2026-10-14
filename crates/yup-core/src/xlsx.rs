@@ -10,10 +10,10 @@
 //! the anchor alone, with the cell metadata that marks it dynamic. No values are cached: the
 //! workbook asks to be calculated in full when it is opened, and the formula then spills.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cells::cell_name;
-use crate::lower::{SheetCells, Style, Value, Workbook, number};
+use crate::lower::{Cell, SheetCells, Style, Value, Workbook, number};
 use crate::zip;
 
 const MAIN: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
@@ -385,38 +385,20 @@ fn sheet_xml(sheet: &SheetCells, first: bool, strings: &SharedStrings) -> String
         x.push_str("</cols>");
     }
     x.push_str("<sheetData>");
-    let mut row = None;
-    for (&(r, c), cell) in &sheet.cells {
-        if row != Some(r) {
-            if row.is_some() {
-                x.push_str("</row>");
-            }
-            x.push_str(&format!("<row r=\"{r}\">"));
-            row = Some(r);
+    let rows: BTreeSet<u32> = sheet
+        .cells
+        .keys()
+        .map(|&(row, _)| row)
+        .chain(sheet.row_styles.keys().copied())
+        .collect();
+    for r in rows {
+        match sheet.row_styles.get(&r) {
+            Some(style) => x.push_str(&format!("<row r=\"{r}\" s=\"{style}\" customFormat=\"1\">")),
+            None => x.push_str(&format!("<row r=\"{r}\">")),
         }
-        let name = cell_name(r, c);
-        let style = if cell.style == 0 {
-            String::new()
-        } else {
-            format!(" s=\"{}\"", cell.style)
-        };
-        x.push_str(&match &cell.value {
-            Value::Number(value) => format!("<c r=\"{name}\"{style}><v>{}</v></c>", number(*value)),
-            Value::Text(text) => format!(
-                "<c r=\"{name}\"{style} t=\"s\"><v>{}</v></c>",
-                strings.index[text]
-            ),
-            Value::Bool(value) => format!(
-                "<c r=\"{name}\"{style} t=\"b\"><v>{}</v></c>",
-                u8::from(*value)
-            ),
-            Value::Formula(formula) => format!(
-                "<c r=\"{name}\"{style} cm=\"1\"><f t=\"array\" ref=\"{name}\">{}</f></c>",
-                escape(formula)
-            ),
-        });
-    }
-    if row.is_some() {
+        for (&(_, c), cell) in sheet.cells.range((r, 0)..=(r, u32::MAX)) {
+            x.push_str(&cell_xml(cell_name(r, c), cell, strings));
+        }
         x.push_str("</row>");
     }
     x.push_str("</sheetData>");
@@ -428,10 +410,33 @@ fn sheet_xml(sheet: &SheetCells, first: bool, strings: &SharedStrings) -> String
     x
 }
 
+fn cell_xml(name: String, cell: &Cell, strings: &SharedStrings) -> String {
+    let style = if cell.style == 0 {
+        String::new()
+    } else {
+        format!(" s=\"{}\"", cell.style)
+    };
+    match &cell.value {
+        Value::Number(value) => format!("<c r=\"{name}\"{style}><v>{}</v></c>", number(*value)),
+        Value::Text(text) => format!(
+            "<c r=\"{name}\"{style} t=\"s\"><v>{}</v></c>",
+            strings.index[text]
+        ),
+        Value::Bool(value) => format!(
+            "<c r=\"{name}\"{style} t=\"b\"><v>{}</v></c>",
+            u8::from(*value)
+        ),
+        Value::Formula(formula) => format!(
+            "<c r=\"{name}\"{style} cm=\"1\"><f t=\"array\" ref=\"{name}\">{}</f></c>",
+            escape(formula)
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lower::{Cell, DefinedName};
+    use crate::lower::DefinedName;
 
     /// Checks that `xml` is well formed: one root, tags nested and closed, attributes quoted,
     /// and only the five predefined entities.
@@ -516,6 +521,7 @@ mod tests {
             sheets: vec![SheetCells {
                 name: "Rates & 'more'".to_string(),
                 cells,
+                row_styles: BTreeMap::from([(3, 1), (5, 1)]),
                 widths: BTreeMap::from([(2, 20.0)]),
             }],
             names: vec![DefinedName {
@@ -578,6 +584,8 @@ mod tests {
             "<c r=\"D3\" cm=\"1\"><f t=\"array\" ref=\"D3\">IF(a&lt;b,&quot;x&quot;,b)</f></c>"
         ));
         assert!(sheet.contains("<c r=\"D2\" s=\"1\"><v>0.25</v></c>"));
+        assert!(sheet.contains("<row r=\"3\" s=\"1\" customFormat=\"1\"><c r=\"B3\""));
+        assert!(sheet.contains("<row r=\"5\" s=\"1\" customFormat=\"1\"></row></sheetData>"));
         assert!(
             find("xl/styles.xml")
                 .contains("<numFmt numFmtId=\"164\" formatCode=\"0.0%&quot;x&quot;\"/>")
