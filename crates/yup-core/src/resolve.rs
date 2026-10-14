@@ -4,9 +4,11 @@
 //! A binding is shown in the workbook when its signature has a label. Without a label it is
 //! local: it has no cells of its own, and its formula is written into the formulas that use it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use crate::Inputs;
 use crate::cells::{looks_like_cell, looks_like_r1c1};
+use crate::csv::{self, Table};
 use crate::diagnostic::{Diagnostic, Pos};
 use crate::functions::Builtin;
 use crate::syntax::{Expr, ExprKind, Ident, ItemKind, Program, Signature, SizeKind, Text};
@@ -26,6 +28,8 @@ pub struct Model {
     pub symbols: BTreeMap<String, Symbol>,
     /// Every binding, each after the bindings it uses.
     pub order: Vec<usize>,
+    /// The table each input defined by `csv "file.csv"` reads, by binding.
+    pub tables: BTreeMap<usize, Table>,
 }
 
 /// What a name refers to.
@@ -122,7 +126,7 @@ fn twice(name: &str, pos: Pos, first: Pos) -> Diagnostic {
 }
 
 /// Resolves every name in `program`.
-pub fn resolve(program: &Program) -> Result<Model, Vec<Diagnostic>> {
+pub fn resolve(program: &Program, inputs: &Inputs) -> Result<Model, Vec<Diagnostic>> {
     let mut errors = Vec::new();
 
     // Each name is declared once: as a size, or by a signature, a definition or both.
@@ -287,23 +291,55 @@ pub fn resolve(program: &Program) -> Result<Model, Vec<Diagnostic>> {
 
     let sheets = lay_out(program, &symbols, &mut bindings, &mut errors);
 
+    // An input defined as `csv "file.csv"` is a table, read from the file the caller gave.
+    let mut tables = BTreeMap::new();
+    let mut table_bindings = BTreeSet::new();
+    for (index, binding) in bindings.iter().enumerate() {
+        let ItemKind::Definition { expr, .. } = &program.items[binding.definition].kind else {
+            unreachable!("a binding's definition index points at a definition");
+        };
+        let Some((file, pos)) = csv_file(expr) else {
+            continue;
+        };
+        if binding.role != Role::Input {
+            continue;
+        }
+        table_bindings.insert(index);
+        match inputs.get(file) {
+            None => errors.push(Diagnostic::error(
+                pos,
+                format!("the input file `{file}` was not given"),
+            )),
+            Some(text) => match csv::parse(text) {
+                Ok(table) => {
+                    tables.insert(index, table);
+                }
+                Err(error) => errors.push(error.in_file(file)),
+            },
+        }
+    }
+
     let mut uses: Vec<Vec<usize>> = Vec::with_capacity(bindings.len());
-    for binding in &bindings {
+    for (index, binding) in bindings.iter().enumerate() {
         let ItemKind::Definition { expr, .. } = &program.items[binding.definition].kind else {
             unreachable!("a binding's definition index points at a definition");
         };
         let mut found = Vec::new();
-        let scope = Scope {
-            symbols: &symbols,
-            sizes: &sizes,
-            bindings: &bindings,
-            params: &binding.params,
-        };
-        scope.resolve_expr(expr, &mut found, &mut errors);
-        if binding.role == Role::Input
-            && let Err(error) = check_input(expr, binding.pos)
-        {
-            errors.push(error);
+        if !table_bindings.contains(&index) {
+            let scope = Scope {
+                symbols: &symbols,
+                sizes: &sizes,
+                bindings: &bindings,
+                params: &binding.params,
+                tables: &tables,
+                table_bindings: &table_bindings,
+            };
+            scope.resolve_expr(expr, &mut found, &mut errors);
+            if binding.role == Role::Input
+                && let Err(error) = check_input(expr, binding.pos)
+            {
+                errors.push(error);
+            }
         }
         uses.push(found);
     }
@@ -322,9 +358,30 @@ pub fn resolve(program: &Program) -> Result<Model, Vec<Diagnostic>> {
             sizes,
             symbols,
             order,
+            tables,
         })
     } else {
         Err(errors)
+    }
+}
+
+/// The file an input reads, and where its name is written, when the definition is
+/// `csv "file.csv"`.
+fn csv_file(expr: &Expr) -> Option<(&str, Pos)> {
+    let ExprKind::Apply { func, args, .. } = &expr.kind else {
+        return None;
+    };
+    match (func.name.as_str(), args.as_slice()) {
+        (
+            "csv",
+            [
+                Expr {
+                    kind: ExprKind::Str(file),
+                    pos,
+                },
+            ],
+        ) => Some((file, *pos)),
+        _ => None,
     }
 }
 
@@ -446,6 +503,10 @@ struct Scope<'a> {
     sizes: &'a [SizeDecl],
     bindings: &'a [Binding],
     params: &'a [String],
+    /// The tables that were read.
+    tables: &'a BTreeMap<usize, Table>,
+    /// Every input defined by `csv`, whether or not its file could be read.
+    table_bindings: &'a BTreeSet<usize>,
 }
 
 /// How a function is called, for messages: `name a b`.
@@ -495,12 +556,67 @@ impl Scope<'_> {
                     errors.push(Diagnostic::error(expr.pos, message));
                 }
             },
-            ExprKind::Apply { func, args, .. } => self.resolve_call(func, args.len(), uses, errors),
+            ExprKind::Apply { func, args, .. } => {
+                self.resolve_call(func, args.len(), uses, errors);
+                match (func.name.as_str(), args.as_slice()) {
+                    ("csv", _) => errors.push(Diagnostic::error(
+                        func.pos,
+                        "`csv` reads a file into an input, as the whole of its definition: \
+                         `history = csv \"history.csv\"`, with `Input` in its signature",
+                    )),
+                    ("column", [name, table]) => errors.extend(self.column_error(name, table)),
+                    _ => {}
+                }
+            }
             _ => {}
         }
         for child in expr.children() {
             self.resolve_expr(child, uses, errors);
         }
+    }
+
+    /// Checks `column "name" table`: a name in quotes, of a column the table has.
+    fn column_error(&self, name: &Expr, table: &Expr) -> Option<Diagnostic> {
+        let ExprKind::Str(column) = &name.kind else {
+            return Some(Diagnostic::error(
+                name.pos,
+                "`column` takes the column's name in double quotes: `column \"revenue\" history`",
+            ));
+        };
+        let binding = match &table.kind {
+            ExprKind::Name(table_name) if !self.params.contains(table_name) => {
+                match self.symbols.get(table_name) {
+                    Some(Symbol::Binding(b)) if self.table_bindings.contains(b) => *b,
+                    _ => {
+                        return Some(Diagnostic::error(
+                            table.pos,
+                            format!(
+                                "`column` takes a table, an input defined by `csv`, and \
+                                 `{table_name}` is not one"
+                            ),
+                        ));
+                    }
+                }
+            }
+            _ => {
+                return Some(Diagnostic::error(
+                    table.pos,
+                    "`column` takes a table by its name: an input defined by `csv`",
+                ));
+            }
+        };
+        // A table whose file could not be read has been reported already.
+        let table = self.tables.get(&binding)?;
+        (!table.header.contains(column)).then(|| {
+            Diagnostic::error(
+                name.pos,
+                format!(
+                    "the table `{}` has no column `{column}`; its columns are {}",
+                    self.bindings[binding].name,
+                    table.header.join(", ")
+                ),
+            )
+        })
     }
 
     fn resolve_call(
@@ -793,11 +909,11 @@ mod tests {
     use crate::parser::parse;
 
     fn model(source: &str) -> Model {
-        resolve(&parse(source).expect("parses")).expect("resolves")
+        resolve(&parse(source).expect("parses"), &Inputs::new()).expect("resolves")
     }
 
     fn errors(source: &str) -> Vec<String> {
-        resolve(&parse(source).expect("parses"))
+        resolve(&parse(source).expect("parses"), &Inputs::new())
             .expect_err("the source is wrong")
             .iter()
             .map(ToString::to_string)

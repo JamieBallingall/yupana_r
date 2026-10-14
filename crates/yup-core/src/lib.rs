@@ -6,6 +6,7 @@
 
 mod cells;
 mod check;
+mod csv;
 mod diagnostic;
 mod elaborate;
 mod functions;
@@ -24,7 +25,49 @@ mod zip;
 
 pub use diagnostic::{Diagnostic, Pos, Severity};
 
+use std::collections::BTreeMap;
+
 use elaborate::{Detail, elaborate};
+
+/// The contents of the input files a source reads, by the name it gives each, such as
+/// `history.csv`. The caller reads them; [`input_files`] says which they are.
+pub type Inputs = BTreeMap<String, String>;
+
+/// An input file a source reads, and where it names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InputFile {
+    pub name: String,
+    pub pos: Pos,
+}
+
+/// The input files a source reads with `csv "file.csv"`, in the order they are named.
+///
+/// ```
+/// let source = "yup 0.1\nhistory : 'History' Input\nhistory = csv \"history.csv\"\n";
+/// let files = yup_core::input_files(source).unwrap();
+/// assert_eq!(files[0].name, "history.csv");
+/// ```
+pub fn input_files(source: &str) -> Result<Vec<InputFile>, Vec<Diagnostic>> {
+    let program = parser::parse(source).map_err(sorted)?;
+    let mut files: Vec<InputFile> = Vec::new();
+    for item in &program.items {
+        let syntax::ItemKind::Definition { expr, .. } = &item.kind else {
+            continue;
+        };
+        if let syntax::ExprKind::Apply { func, args, .. } = &expr.kind
+            && func.name == "csv"
+            && let [arg] = args.as_slice()
+            && let syntax::ExprKind::Str(name) = &arg.kind
+            && !files.iter().any(|file| file.name == *name)
+        {
+            files.push(InputFile {
+                name: name.clone(),
+                pos: arg.pos,
+            });
+        }
+    }
+    Ok(files)
+}
 
 /// The version of the `.yup` language this crate reads, as a file's first line gives it.
 pub const LANGUAGE_VERSION: &str = parser::VERSION;
@@ -109,12 +152,12 @@ pub struct Built {
 /// ```
 /// let source = "yup 0.1\nrate : 'Rate' Input\nrate = 0.05\nyears = 1 .. 3\n\
 ///               growth : 'Growth'\ngrowth = (1 + rate) ^ years\n";
-/// let built = yup_core::build(source).unwrap();
+/// let built = yup_core::build(source, &yup_core::Inputs::new()).unwrap();
 /// assert!(built.xlsx.starts_with(b"PK"));
 /// assert!(built.warnings.is_empty());
 /// ```
-pub fn build(source: &str) -> Result<Built, Vec<Diagnostic>> {
-    match run(source, Step::Package, true)? {
+pub fn build(source: &str, inputs: &Inputs) -> Result<Built, Vec<Diagnostic>> {
+    match run(source, inputs, Step::Package, true)? {
         Outcome::Bytes(xlsx, warnings) => Ok(Built { xlsx, warnings }),
         Outcome::Text(..) => unreachable!("Package gives bytes when asked for them"),
     }
@@ -126,18 +169,18 @@ pub fn build(source: &str) -> Result<Built, Vec<Diagnostic>> {
 /// shows the cells and defined names, and Package the parts of the file.
 ///
 /// ```
-/// use yup_core::{Step, show};
+/// use yup_core::{Inputs, Step, show};
 ///
 /// let source = "yup 0.1\nyears = 1 .. 5\ngrowth = tail years / lag 1 years\n";
-/// let shown = show(source, Step::Infer).unwrap();
+/// let shown = show(source, Step::Infer, &Inputs::new()).unwrap();
 /// assert_eq!(
 ///     shown.text,
 ///     "yup 0.1\nyears : [1, 5]\nyears = 1 .. 5\ngrowth : [1, 4] from [0, 1]\n\
 ///      growth = tail years / lag 1 years\n"
 /// );
 /// ```
-pub fn show(source: &str, step: Step) -> Result<Shown, Vec<Diagnostic>> {
-    match run(source, step, false)? {
+pub fn show(source: &str, step: Step, inputs: &Inputs) -> Result<Shown, Vec<Diagnostic>> {
+    match run(source, inputs, step, false)? {
         Outcome::Text(text, warnings) => Ok(Shown { text, warnings }),
         Outcome::Bytes(..) => unreachable!("bytes are given only when asked for"),
     }
@@ -151,13 +194,13 @@ enum Outcome {
 
 /// Runs the steps up to `last`. Package gives the file's bytes when `bytes` is set, and a
 /// listing of its parts otherwise.
-fn run(source: &str, last: Step, bytes: bool) -> Result<Outcome, Vec<Diagnostic>> {
+fn run(source: &str, inputs: &Inputs, last: Step, bytes: bool) -> Result<Outcome, Vec<Diagnostic>> {
     let program = parser::parse(source).map_err(sorted)?;
     let text = |text: String| Ok(Outcome::Text(text, Vec::new()));
     if last == Step::Parse {
         return text(printer::print(&program));
     }
-    let model = resolve::resolve(&program).map_err(sorted)?;
+    let model = resolve::resolve(&program, inputs).map_err(sorted)?;
     let print = |detail: Detail| printer::print(&elaborate(&program, &model, &detail));
     if last == Step::Resolve {
         return text(print(Detail::Resolved));
@@ -225,7 +268,7 @@ total = sum_columns revenue
 ";
 
     fn text(source: &str, step: Step) -> String {
-        show(source, step).expect("runs").text
+        show(source, step, &Inputs::new()).expect("runs").text
     }
 
     #[test]
@@ -359,12 +402,85 @@ names
     #[test]
     fn an_error_in_a_function_names_the_call() {
         let source = "yup 0.1\nshift x = tail x / init x\ny = shift (1 .. 3)\n";
-        let errors = show(source, Step::Infer).expect_err("misaligned");
+        let errors = show(source, Step::Infer, &Inputs::new()).expect_err("misaligned");
         assert_eq!(
             errors[0].to_string(),
             "2:18: error: the two sides of `/` are misaligned along the columns: one covers \
              positions [1, 3) and the other [0, 2); `lag` shifts a range along, and `tail` and \
              `init` drop its ends, in `shift` as it is called at 3:5"
+        );
+    }
+
+    const SALES: &str = "\
+yup 0.1
+sales : 'Sales' Input
+sales = csv \"sales.csv\"
+latest : 'Latest units'
+latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (column \"units\" sales)
+";
+
+    fn sales_inputs(csv: &str) -> Inputs {
+        Inputs::from([("sales.csv".to_string(), csv.to_string())])
+    }
+
+    #[test]
+    fn a_table_is_read_from_its_file_and_written_under_its_column_names() {
+        let inputs = sales_inputs("year,units\n2024,10\n2025,12\n");
+        assert_eq!(
+            input_files(SALES).expect("parses"),
+            [InputFile {
+                name: "sales.csv".to_string(),
+                pos: Pos::new(3, 13)
+            }]
+        );
+        let listing = show(SALES, Step::Lower, &inputs).expect("lowers").text;
+        for line in [
+            "  B2     'Sales'",
+            "  D2     'year'  [bold]",
+            "  E2     'units'  [bold]",
+            "  D3     2024  [input]",
+            "  E4     12  [input]",
+            "  D5     =_xlfn.XLOOKUP(MAX(INDEX(sales,0,1)),INDEX(sales,0,1),INDEX(sales,0,2))",
+            "  sales = Sheet1!$D$3:$E$4",
+        ] {
+            assert!(listing.contains(line), "{line}\n{listing}");
+        }
+        let placed = show(SALES, Step::Place, &inputs).expect("places").text;
+        assert!(
+            placed.contains("sales : [2, 2] 'Sales' @ (3, 4) Input"),
+            "{placed}"
+        );
+    }
+
+    #[test]
+    fn mistakes_with_tables_are_reported_where_they_are() {
+        let missing = show(SALES, Step::Resolve, &Inputs::new()).expect_err("no file");
+        assert_eq!(
+            missing[0].to_string(),
+            "3:13: error: the input file `sales.csv` was not given"
+        );
+        let short = show(SALES, Step::Resolve, &sales_inputs("year,units\n2024\n"))
+            .expect_err("a short row");
+        assert_eq!(
+            short[0].to_string(),
+            "sales.csv:2:1: error: this row has 1 field, and the header has 2 fields"
+        );
+        let column = show(
+            "yup 0.1\nsales : 'Sales' Input\nsales = csv \"sales.csv\"\nx = column \"price\" \
+             sales\ny = csv \"other.csv\"\n",
+            Step::Resolve,
+            &sales_inputs("year,units\n2024,10\n"),
+        )
+        .expect_err("no such column");
+        let messages: Vec<String> = column.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            messages,
+            [
+                "4:12: error: the table `sales` has no column `price`; its columns are year, \
+                 units",
+                "5:5: error: `csv` reads a file into an input, as the whole of its definition: \
+                 `history = csv \"history.csv\"`, with `Input` in its signature",
+            ]
         );
     }
 
@@ -403,7 +519,7 @@ names
 
     #[test]
     fn build_gives_an_xlsx_with_every_part() {
-        let built = build(FORECAST).expect("builds");
+        let built = build(FORECAST, &Inputs::new()).expect("builds");
         let names: Vec<String> = zip::read(&built.xlsx)
             .into_iter()
             .map(|(name, _)| name)
@@ -423,7 +539,7 @@ names
             ]
         );
         assert_eq!(
-            build(FORECAST).expect("builds again"),
+            build(FORECAST, &Inputs::new()).expect("builds again"),
             built,
             "the same bytes"
         );
@@ -443,7 +559,7 @@ names
     fn nothing_goes_below_a_range_of_unknown_height() {
         let source = "yup 0.1\nh : 'H' Input\nh = 3\ndown : 'Down'\ndown = transpose (1 .. \
                       h)\nafter : 'After'\nafter = 1\n";
-        let errors = show(source, Step::Place).expect_err("blocked");
+        let errors = show(source, Step::Place, &Inputs::new()).expect_err("blocked");
         assert_eq!(
             errors[0].to_string(),
             "6:1: error: `after` would go below `down`, whose height, down_n, is unknown when \
@@ -454,7 +570,7 @@ names
     #[test]
     fn check_finds_collisions_and_possible_spills() {
         let clash = "yup 0.1\na : 'A' @ (2, 4)\na = 1\nb : 'B' @ (2, 4)\nb = 2\n";
-        let errors: Vec<String> = show(clash, Step::Check)
+        let errors: Vec<String> = show(clash, Step::Check, &Inputs::new())
             .expect_err("collides")
             .iter()
             .map(ToString::to_string)
@@ -468,7 +584,7 @@ names
         );
         let spill = "yup 0.1\nh : 'H' Input\nh = 3\nrow : 'Row'\nrow = 1 .. h\nside : 'Side' @ \
                      (3, 9)\nside = 1\n";
-        let shown = show(spill, Step::Check).expect("only a warning");
+        let shown = show(spill, Step::Check, &Inputs::new()).expect("only a warning");
         assert_eq!(
             shown.warnings[0].to_string(),
             "4:1: warning: `row` spills into `side` once row_n grows large enough; the workbook \
@@ -491,7 +607,8 @@ names
 
     #[test]
     fn problems_come_in_the_order_of_the_file() {
-        let errors = show("yup 0.1\nb = c\na = d\n", Step::Resolve).expect_err("unknown names");
+        let errors = show("yup 0.1\nb = c\na = d\n", Step::Resolve, &Inputs::new())
+            .expect_err("unknown names");
         let lines: Vec<u32> = errors.iter().map(|e| e.pos.line).collect();
         assert_eq!(lines, [2, 3]);
     }

@@ -1,0 +1,38 @@
+yup 0.1
+
+// Sales history for an invented company, read from history.csv beside this file, and a
+// forecast that starts from its last year. The table is written into the workbook as inputs,
+// under its column names.
+
+sheet 'Forecast'
+
+growth_rate : 'Growth in units per year' Input Format "0.0%"
+growth_rate = 0.05
+
+horizon : 'Forecast horizon (years)' Input
+horizon = 4
+
+last_year : 'Last year of history'
+last_year = maximum (column "year" history)
+
+// A lookup gives one value for each key: here, one key, so one value.
+last_units : 'Units sold in the last year' Format "#,##0"
+last_units = lookup last_year (column "year" history) (column "units" history)
+
+gap
+heading 'Forecast'
+
+// One timeline: every row below is made from `step`, so they share its size.
+step = 1 .. horizon
+
+year : 'Year'
+year = last_year + step
+
+units : 'Units' Format "#,##0"
+units = last_units * (1 + growth_rate) ^ step
+
+sheet 'Sales history'
+
+// The table takes as many rows as the file has, counted when the workbook is written.
+history : 'Sales' Input
+history = csv "history.csv"

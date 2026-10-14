@@ -145,6 +145,18 @@ pub fn check(
                         binding: Some(binding),
                         spills: b.role == Role::Shown,
                     });
+                    if let Some(&(top, left)) = grounded.headers.get(&binding) {
+                        rects.push(Rect {
+                            top,
+                            left,
+                            height: SizeExpr::constant(1),
+                            width: shape.columns.size.clone(),
+                            what: format!("the column names of `{}`", b.name),
+                            pos,
+                            binding: Some(binding),
+                            spills: false,
+                        });
+                    }
                 }
             }
         }

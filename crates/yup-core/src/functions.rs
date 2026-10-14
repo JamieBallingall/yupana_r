@@ -9,6 +9,8 @@
 pub enum Builtin {
     Abs,
     Average,
+    Column,
+    Csv,
     Exp,
     Init,
     Lag,
@@ -32,6 +34,8 @@ pub enum Builtin {
 const TABLE: &[(&str, Builtin, usize, &str)] = &[
     ("abs", Builtin::Abs, 1, "abs x"),
     ("average", Builtin::Average, 1, "average x"),
+    ("column", Builtin::Column, 2, "column \"name\" table"),
+    ("csv", Builtin::Csv, 1, "csv \"file.csv\""),
     ("exp", Builtin::Exp, 1, "exp x"),
     ("init", Builtin::Init, 1, "init x"),
     ("lag", Builtin::Lag, 2, "lag 1 x, or lag 1 x from first"),

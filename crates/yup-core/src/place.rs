@@ -39,6 +39,8 @@ pub struct Placed {
     pub anchors: BTreeMap<usize, At>,
     /// Each shown binding's label cell.
     pub labels: BTreeMap<usize, At>,
+    /// Each table's first column name, in the row above its values.
+    pub headers: BTreeMap<usize, At>,
 }
 
 /// The next free row, or the binding of unknown height that nothing can go below.
@@ -87,12 +89,14 @@ pub fn place(program: &Program, model: &Model, typed: &Typed) -> Result<Placed, 
                         .signature(program, binding)
                         .expect("a shown binding has a signature");
                     let shape = &typed.shapes[binding];
+                    // A table takes a row of column names above its values.
+                    let header = i64::from(model.tables.contains_key(&binding));
                     let anchor = match &sig.at {
                         Some(at) => pin(at, model, typed),
                         None => {
                             let what = format!("`{}`", sig.name.name);
                             next_row(&cursor, model, typed, &what, sig.name.pos).map(|row| At {
-                                row: row.offset(shape.rows.start),
+                                row: row.offset(shape.rows.start + header),
                                 column: SizeExpr::constant(VALUE_COLUMN + shape.columns.start),
                             })
                         }
@@ -104,10 +108,20 @@ pub fn place(program: &Program, model: &Model, typed: &Typed) -> Result<Placed, 
                             continue;
                         }
                     };
+                    // A table's label goes beside its column names, in the row above its values.
                     let label = At {
-                        row: anchor.row.clone(),
+                        row: anchor.row.offset(-header),
                         column: anchor.column.offset(-(shape.columns.start + LABEL_OFFSET)),
                     };
+                    if header == 1 {
+                        placed.headers.insert(
+                            binding,
+                            At {
+                                row: anchor.row.offset(-1),
+                                column: anchor.column.clone(),
+                            },
+                        );
+                    }
                     let unknown_height = shape
                         .rows
                         .size

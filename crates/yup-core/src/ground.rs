@@ -16,6 +16,7 @@ pub struct Grounded {
     pub headings: BTreeMap<usize, Cell>,
     pub anchors: BTreeMap<usize, Cell>,
     pub labels: BTreeMap<usize, Cell>,
+    pub headers: BTreeMap<usize, Cell>,
     pub shapes: Vec<Shape>,
 }
 
@@ -34,6 +35,7 @@ pub fn ground(typed: &Typed, placed: &Placed) -> Grounded {
         headings: cells(&placed.headings),
         anchors: cells(&placed.anchors),
         labels: cells(&placed.labels),
+        headers: cells(&placed.headers),
         shapes: typed
             .shapes
             .iter()

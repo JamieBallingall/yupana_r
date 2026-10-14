@@ -453,6 +453,23 @@ impl Infer<'_> {
                     )
                 })
             }
+            Builtin::Csv => {
+                let table = &self.model.tables[&self.current];
+                if table.rows.is_empty() {
+                    return Err(fail(args[0].pos, "the file has column names but no rows"));
+                }
+                Ok(Shape {
+                    rows: Extent::of(SizeExpr::constant(count(table.rows.len()))),
+                    columns: Extent::of(SizeExpr::constant(count(table.header.len()))),
+                })
+            }
+            Builtin::Column => {
+                let table = self.shape(&args[1])?;
+                Ok(Shape {
+                    rows: table.rows,
+                    columns: Extent::one(),
+                })
+            }
             Builtin::Abs | Builtin::Exp | Builtin::Ln | Builtin::Sqrt | Builtin::Not => {
                 self.shape(&args[0])
             }
@@ -765,7 +782,7 @@ mod tests {
 
     fn typed(source: &str) -> Result<(Model, Typed), Vec<String>> {
         let program = parse(source).expect("parses");
-        let model = resolve(&program).expect("resolves");
+        let model = resolve(&program, &crate::Inputs::new()).expect("resolves");
         infer(&program, &model)
             .map(|typed| (model, typed))
             .map_err(|errors| errors.iter().map(ToString::to_string).collect())

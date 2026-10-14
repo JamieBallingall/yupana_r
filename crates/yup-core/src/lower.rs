@@ -17,6 +17,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cells::{absolute, cell_name, sheet_reference};
+use crate::csv::Field;
 use crate::diagnostic::Diagnostic;
 use crate::functions::Builtin;
 use crate::ground::{Cell as At, Grounded};
@@ -314,7 +315,33 @@ impl Lowerer<'_> {
         });
         let (row, column) = self.grounded.anchors[&binding];
         let expr = self.model.definition(self.program, binding);
-        if b.role == Role::Input {
+        if let Some(table) = self.model.tables.get(&binding) {
+            let header_style = self.style(Style {
+                bold: true,
+                ..Style::default()
+            });
+            let (header_row, header_column) = self.grounded.headers[&binding];
+            for (j, name) in table.header.iter().enumerate() {
+                let at = (header_row, header_column + to_i64(j));
+                put(cells, at, Value::Text(name.clone()), header_style);
+            }
+            for (i, fields) in table.rows.iter().enumerate() {
+                for (j, field) in fields.iter().enumerate() {
+                    let value = match field {
+                        Field::Empty => continue,
+                        Field::Number(value) => Value::Number(*value),
+                        Field::Bool(value) => Value::Bool(*value),
+                        Field::Text(text) => Value::Text(text.clone()),
+                    };
+                    put(
+                        cells,
+                        (row + to_i64(i), column + to_i64(j)),
+                        value,
+                        value_style,
+                    );
+                }
+            }
+        } else if b.role == Role::Input {
             let rows: Vec<Vec<&Expr>> = match &expr.kind {
                 ExprKind::List(rows) => rows.iter().map(|row| row.iter().collect()).collect(),
                 _ => vec![vec![expr]],
@@ -555,6 +582,30 @@ impl Lowerer<'_> {
             Builtin::Round => call("ROUND", &[arg(1)?, arg(0)?]),
             Builtin::Transpose => call("TRANSPOSE", &[arg(0)?]),
             Builtin::Lookup => call("_xlfn.XLOOKUP", &[arg(0)?, arg(1)?, arg(2)?]),
+            Builtin::Column => {
+                let (ExprKind::Str(name), ExprKind::Name(table)) = (&args[0].kind, &args[1].kind)
+                else {
+                    unreachable!("Resolve checks the column's name and its table");
+                };
+                let Some(&Symbol::Binding(binding)) = self.model.symbols.get(table) else {
+                    unreachable!("Resolve checks the table");
+                };
+                let index = self.model.tables[&binding]
+                    .header
+                    .iter()
+                    .position(|column| column == name)
+                    .expect("Resolve checks the column's name");
+                // INDEX with row 0 gives the whole column.
+                call(
+                    "INDEX",
+                    &[
+                        arg(1)?,
+                        Formula::atom("0"),
+                        Formula::atom((index + 1).to_string()),
+                    ],
+                )
+            }
+            Builtin::Csv => unreachable!("Resolve allows csv only as an input's definition"),
         };
         Ok(formula)
     }

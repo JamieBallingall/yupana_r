@@ -3,10 +3,10 @@
 
 use std::fs;
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use yup_core::{Diagnostic, Pos, Step};
+use yup_core::{Diagnostic, Inputs, Pos, Step};
 
 const USAGE: &str = "\
 usage: yup build <file.yup> [-o <file.xlsx>]
@@ -136,27 +136,65 @@ fn run(command: Command) -> Result<(), Failure> {
                     .into_owned(),
             };
             let source = read_source(&input)?;
-            let built = yup_core::build(&source).map_err(|errors| report(&input, &errors))?;
+            let inputs = read_inputs(&input, &source)?;
+            let built =
+                yup_core::build(&source, &inputs).map_err(|errors| report(&input, &errors))?;
             report(&input, &built.warnings);
             write_output(&output, &built.xlsx)?;
             if output != "-" {
                 eprintln!("yup: wrote {output}");
             }
         }
-        Command::Check { input } => {
-            let source = read_source(&input)?;
-            let shown =
-                yup_core::show(&source, Step::Check).map_err(|errors| report(&input, &errors))?;
-            report(&input, &shown.warnings);
-        }
-        Command::Show { step, input } => {
-            let source = read_source(&input)?;
-            let shown = yup_core::show(&source, step).map_err(|errors| report(&input, &errors))?;
-            report(&input, &shown.warnings);
-            print!("{}", shown.text);
-        }
+        Command::Check { input } => show(&input, Step::Check, false)?,
+        Command::Show { step, input } => show(&input, step, true)?,
     }
     Ok(())
+}
+
+/// Runs the steps up to `step`, reports any warnings, and prints the result if asked to.
+fn show(input: &str, step: Step, print: bool) -> Result<(), Failure> {
+    let source = read_source(input)?;
+    let inputs = read_inputs(input, &source)?;
+    let shown = yup_core::show(&source, step, &inputs).map_err(|errors| report(input, &errors))?;
+    report(input, &shown.warnings);
+    if print {
+        print!("{}", shown.text);
+    }
+    Ok(())
+}
+
+/// Reads the input files the source names, from the folder the source is in.
+fn read_inputs(input: &str, source: &str) -> Result<Inputs, Failure> {
+    // A source that does not parse is reported by the steps that follow.
+    let Ok(files) = yup_core::input_files(source) else {
+        return Ok(Inputs::new());
+    };
+    let folder = match Path::new(input).parent() {
+        Some(folder) if input != "-" => folder.to_path_buf(),
+        _ => PathBuf::new(),
+    };
+    let mut inputs = Inputs::new();
+    let mut problems = Vec::new();
+    for file in files {
+        let path = folder.join(&file.name);
+        let read = fs::read(&path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))
+            .and_then(|bytes| {
+                String::from_utf8(bytes)
+                    .map_err(|_| format!("{} is not valid UTF-8", path.display()))
+            });
+        match read {
+            Ok(text) => {
+                inputs.insert(file.name, text);
+            }
+            Err(message) => problems.push(Diagnostic::error(file.pos, message)),
+        }
+    }
+    if problems.is_empty() {
+        Ok(inputs)
+    } else {
+        Err(report(input, &problems))
+    }
 }
 
 /// Prints each problem after the name of the file it is in, and returns the failure that says

@@ -65,7 +65,24 @@ for defined names, so that showing a binding never forces a rename. A name canno
 or a keyword (`if`, `then`, `else`, `from`, `sheet`, `heading`, `gap`, `yup`, `true`, `false`).
 
 An input's definition is written out in the file: a number, a string, `true`, `false`, or a list
-of these.
+of these. Or it is read from a CSV file beside the `.yup` file, as a table:
+
+```text
+history : 'Sales' Input
+history = csv "history.csv"
+
+last_units = lookup 2025 (column "year" history) (column "units" history)
+```
+
+- The file's first row names its columns, and every other row is a record with one field for
+  each column. Fields are separated by commas; a field in double quotes can hold commas, line
+  breaks and doubled quotes.
+- An unquoted field is typed: empty is blank, a number in JSON's grammar is a number, `TRUE` and
+  `FALSE` in any case are logicals, and anything else is text. A quoted field is always text.
+- The table's size is counted when the workbook is written: as many rows as the file has records,
+  and as many columns as it has names. It is written into the workbook as input cells, under a row
+  of its column names, with its label beside them.
+- `column "units" history` is one column of the table, written `INDEX(history,0,2)`.
 
 ## Functions
 
@@ -154,6 +171,8 @@ Arguments that say how much come first, and the data last.
 | `round d x` | x rounded to d digits | `ROUND(x,d)` |
 | `transpose x` | rows and columns swapped | `TRANSPOSE(x)` |
 | `lookup k ks vs` | the value beside each key, shaped as `k` | `XLOOKUP(k,ks,vs)` |
+| `column "c" t` | the column called `c` of the table `t` | `INDEX(t,0,j)` |
+| `csv "file.csv"` | a table read from a file, as the whole of an input's definition | its cells |
 
 `min` and `max` work position by position, like Haskell's; `minimum` and `maximum` reduce a range
 to one value.

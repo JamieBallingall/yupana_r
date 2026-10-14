@@ -98,3 +98,33 @@ fn a_wrong_command_line_prints_the_usage() {
          lower, package\n\nusage:"
     ));
 }
+
+#[test]
+fn build_reads_input_files_beside_the_source() {
+    let source: PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "..",
+        "..",
+        "examples",
+        "history.yup",
+    ]
+    .iter()
+    .collect();
+    let path: PathBuf = [env!("CARGO_TARGET_TMPDIR"), "history.xlsx"]
+        .iter()
+        .collect();
+    let source = source.to_string_lossy().into_owned();
+    let path = path.to_string_lossy().into_owned();
+    let output = yup(&["build", &source, "-o", &path], b"");
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let output = yup(
+        &["check", "-"],
+        b"yup 0.1\nt : 'T' Input\nt = csv \"nowhere.csv\"\n",
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        text(&output.stderr).starts_with("<stdin>:3:9: error: cannot read nowhere.csv: "),
+        "{}",
+        text(&output.stderr)
+    );
+}

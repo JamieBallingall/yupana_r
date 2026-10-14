@@ -45,7 +45,7 @@ things silently or bury the user in warnings.
 
 `yup build` writes the workbook, by default beside the `.yup` file. `yup show <step>` prints what
 any step makes of a file: the steps up to Check print a `.yup` file with more worked out, Lower
-prints the cells, and Package the parts of the xlsx file. [examples](examples) has three files to
+prints the cells, and Package the parts of the xlsx file. [examples](examples) has four files to
 start from.
 
 ## Stage 1: scope
@@ -176,7 +176,13 @@ provisional, and names the open question it answers where there is one.
   in Haskell. Arguments that say how much come first (`lag 1 x`, `round 2 x`). Text is joined
   with `++`. Logical `&&`, `||` and `not` work position by position too.
 - **Inputs** are literals or lists of literals, written in blue, as financial models usually show
-  inputs. Input files (question 4) are not built yet.
+  inputs, or tables read from CSV files (question 4).
+- **Tables.** `history = csv "history.csv"` reads a file beside the `.yup` file, which the command
+  line passes to the core. Its first row names the columns; unquoted fields are typed, quoted
+  ones are text; `column "units" history` picks a column. A table's size is counted when the
+  workbook is written, which departs from the range model's rule that a table of variable length
+  has an unknown size: rows written as cells cannot grow in the workbook, so a table that grows
+  there needs a reference that grows with it, which is left open.
 - **Number formats** are checked conservatively before they reach the workbook; literal text in a
   format goes in double quotes.
 - **The zip** stores its parts without compression and with a fixed timestamp, so the same file
@@ -470,7 +476,9 @@ reasons.
 3. **An escape hatch for raw formula text:** allowed, and if so how marked?
 4. **Input files:** the CSV dialect and the JSON shape, how cells are typed (number, text, logical,
    blank), how a `.yup` binds an input to a range, and how an input table declares its size
-   variable. *0.1: not built; inputs are written in the file.*
+   variable. *0.1: CSV in RFC 4180's dialect, `csv "file.csv"` in an input's definition, and a
+   size counted when the workbook is written. JSON is not built, and neither is a table that grows
+   in the workbook.*
 5. **Dates:** a literal syntax, written as serial numbers in the 1900 date system.
 6. **Logicals and errors:** whether error literals exist, and how `and`, `or` and `not` are
    written. *0.1: `true` and `false`, and `&&`, `||` and `not`.*
