@@ -1,0 +1,48 @@
+yup 0.1
+
+// A revenue and profit forecast for an invented company. The horizon is an input:
+// change it in the workbook, and every row of the forecast resizes to match.
+
+sheet 'Inputs'
+
+forecast_horizon : 'Forecast horizon (years)' Input
+forecast_horizon = 5
+
+base_revenue : 'Revenue in the base year' Input Format "#,##0"
+base_revenue = 1200
+
+revenue_growth : 'Revenue growth per year' Input Format "0.0%"
+revenue_growth = 0.06
+
+ebitda_margin : 'EBITDA margin' Input Format "0.0%"
+ebitda_margin = 0.22
+
+sheet 'Forecast'
+
+heading 'Revenue'
+
+year : 'Year'
+year = 1 .. forecast_horizon
+
+// A binding without a label is local: it has no cells, and its formula is written
+// into the formulas that use it.
+growth_factor = 1 + revenue_growth
+
+revenue : 'Revenue' Format "#,##0"
+revenue = base_revenue * growth_factor ^ year
+
+// `lag 1` shifts revenue one year along, so this row starts under year 2.
+prior_revenue : 'Revenue a year earlier ☺' Format "#,##0"
+prior_revenue = lag 1 revenue
+
+growth : 'Revenue growth, year on year' Format "0.0%"
+growth = tail revenue / prior_revenue - 1
+
+gap
+heading 'Profit'
+
+ebitda : 'EBITDA' Format "#,##0"
+ebitda = revenue * ebitda_margin
+
+total_ebitda : 'EBITDA over the forecast' Format "#,##0" Bold
+total_ebitda = sum ebitda

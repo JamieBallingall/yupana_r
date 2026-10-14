@@ -1,0 +1,12 @@
+yup 0.1
+
+// The smallest useful .yup file: two inputs and a formula, on one sheet.
+
+price : 'Price' Input Format "0.00"
+price = 4.5
+
+quantity : 'Quantity' Input
+quantity = 120
+
+revenue : 'Revenue' Format "#,##0.00" Bold
+revenue = price * quantity

@@ -1,0 +1,40 @@
+yup 0.1
+
+// Revenue by segment for an invented retailer. The number of segments is fixed
+// when the file is written; the horizon is decided in the workbook.
+
+segments : Size Fixed
+segments = 3
+
+sheet 'Inputs'
+
+horizon : 'Forecast horizon (years)' Input
+horizon = 6
+
+segment_names : [1, segments] 'Segment' Input
+segment_names = ["Retail", "Wholesale", "Online"]
+
+base_revenue : [1, segments] 'Revenue in the base year' Input Format "#,##0"
+base_revenue = [400, 250, 150]
+
+growth_rates : [1, segments] 'Growth per year' Input Format "0.0%"
+growth_rates = [0.02, 0.04, 0.15]
+
+sheet 'Revenue'
+
+year : 'Year'
+year = 1 .. horizon
+
+// One row per segment, one column per year: a column of segments times a row of
+// years gives a grid.
+revenue : 'Revenue by segment' Format "#,##0"
+revenue = transpose base_revenue * (1 + transpose growth_rates) ^ year
+
+gap
+
+// The rows above have a fixed height, so these rows can go below them.
+total : 'Total revenue' Format "#,##0" Bold
+total = sum_columns revenue
+
+total_growth : 'Growth in total revenue' Format "0.0%"
+total_growth = tail total / lag 1 total - 1

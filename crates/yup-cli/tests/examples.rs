@@ -1,0 +1,51 @@
+//! Every example in `examples/` builds without warnings, and what each step up to Check prints
+//! reads back to itself.
+
+use std::fs;
+use std::path::PathBuf;
+
+use yup_core::Step;
+
+fn examples() -> Vec<(String, String)> {
+    let folder: PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "..", "examples"]
+        .iter()
+        .collect();
+    let mut paths: Vec<PathBuf> = fs::read_dir(&folder)
+        .expect("the examples folder exists")
+        .map(|entry| entry.expect("the folder can be listed").path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "yup"))
+        .collect();
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| {
+            let source = fs::read_to_string(&path).expect("an example is UTF-8");
+            (path.display().to_string(), source)
+        })
+        .collect()
+}
+
+#[test]
+fn every_example_builds_without_warnings() {
+    let examples = examples();
+    assert!(examples.len() >= 3, "the examples are found");
+    for (name, source) in &examples {
+        let built = yup_core::build(source).unwrap_or_else(|errors| panic!("{name}: {errors:?}"));
+        assert!(built.warnings.is_empty(), "{name}: {:?}", built.warnings);
+    }
+}
+
+#[test]
+fn every_step_of_every_example_reads_back_to_itself() {
+    for (name, source) in examples() {
+        for step in Step::ALL.into_iter().filter(|&step| step <= Step::Check) {
+            let once = yup_core::show(&source, step)
+                .unwrap_or_else(|errors| panic!("{name}: {errors:?}"))
+                .text;
+            let twice = yup_core::show(&once, step)
+                .unwrap_or_else(|errors| panic!("{name} shown at {}: {errors:?}", step.name()))
+                .text;
+            assert_eq!(twice, once, "{name} at {}", step.name());
+        }
+    }
+}
