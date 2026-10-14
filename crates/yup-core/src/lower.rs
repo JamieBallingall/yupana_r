@@ -26,6 +26,11 @@ use crate::place::{LABEL_OFFSET, VALUE_COLUMN};
 use crate::resolve::{Binding, Model, Role, SheetItem, Symbol};
 use crate::syntax::{BinOp, Expr, ExprKind, ItemKind, Program};
 
+/// Names for the LET variables and LAMBDA parameters that the tool writes itself. Each starts
+/// with `_`, which no `.yup` name can, so none hides a binding of the file's that the formula
+/// around it refers to.
+const TOOL_NAMES: [&str; 5] = ["_x", "_a", "_b", "_balance", "_period"];
+
 /// The longest formula the spreadsheet app takes, from its published limits.
 const MAX_FORMULA: usize = 8_192;
 /// The deepest the spreadsheet app nests functions, from its published limits.
@@ -553,7 +558,7 @@ impl Lowerer<'_> {
                 } else {
                     "_xlfn.BYROW"
                 };
-                let x = Formula::atom("_xlpm.x");
+                let x = Formula::atom(format!("_xlpm.{}", TOOL_NAMES[0]));
                 let sum = call("_xlfn.LAMBDA", &[x.clone(), call("SUM", &[x])]);
                 call(by, &[arg(0)?, sum])
             }
@@ -569,7 +574,10 @@ impl Lowerer<'_> {
                 if a.is_simple() && b.is_simple() {
                     call("IF", &[binary(op, &a, &b), a, b])
                 } else {
-                    let (x, y) = (Formula::atom("_xlpm.a"), Formula::atom("_xlpm.b"));
+                    let (x, y) = (
+                        Formula::atom(format!("_xlpm.{}", TOOL_NAMES[1])),
+                        Formula::atom(format!("_xlpm.{}", TOOL_NAMES[2])),
+                    );
                     let choice = call("IF", &[binary(op, &x, &y), x.clone(), y.clone()]);
                     call("_xlfn.LET", &[x, a, y, b, choice])
                 }

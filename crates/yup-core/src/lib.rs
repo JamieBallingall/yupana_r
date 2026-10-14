@@ -369,7 +369,7 @@ names
             "  D2     100  [input]",
             "  D4     300  [input]",
             "  D6     =base*1.1^year",
-            "  D9     =_xlfn.BYCOL(revenue,_xlfn.LAMBDA(_xlpm.x,SUM(_xlpm.x)))",
+            "  D9     =_xlfn.BYCOL(revenue,_xlfn.LAMBDA(_xlpm._x,SUM(_xlpm._x)))",
             "  base = Sheet1!$D$2:$D$4",
         ] {
             assert!(listing.contains(line), "{line}\n{listing}");
@@ -510,8 +510,8 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
         );
         assert!(
             listing.contains(
-                "=_xlfn.LET(_xlpm.a,_xlfn.SEQUENCE(1,4)*2,_xlpm.b,3,IF(_xlpm.a<_xlpm.b,_xlpm.a,\
-                 _xlpm.b))"
+                "=_xlfn.LET(_xlpm._a,_xlfn.SEQUENCE(1,4)*2,_xlpm._b,3,IF(_xlpm._a<_xlpm._b,_xlpm._a,\
+                 _xlpm._b))"
             ),
             "{listing}"
         );
