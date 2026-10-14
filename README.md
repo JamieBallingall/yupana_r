@@ -4,7 +4,8 @@ Working name: **yupana_r**. The repository is `yupana_r`; the project and crate 
 decided. There is an existing **yupana** repo which this will eventually replace.
 
 > **Seed capsule,** drafted 2026-10-14. This is a design record, not documentation of code.
-> **No code is written until the range model and the core syntax below are decided.**
+> **Beyond a stub that builds and passes its checks, no code is written until the range model and
+> the core syntax below are decided.**
 
 ## What this is
 
@@ -82,6 +83,9 @@ Stage 1 is the language and the writer, with no evaluation.
 
 - Rust. A core crate does no input or output and always builds for `wasm32-unknown-unknown`. A
   command-line crate does the reading and writing. Wrappers for the web and for MCP come later.
+- The crates are `yup-core` and `yup-cli`, and the command is `yup`: provisional names until open
+  question 12 is settled. For now `yup` reads a source on standard input and writes the result to
+  standard output; how it finds the CSV inputs is part of open question 4.
 - `.yup` is a language of its own, with its own lexer and parser, and is designed to be easy to
   lex.
 - Formulas are given range by range.

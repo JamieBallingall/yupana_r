@@ -1,0 +1,11 @@
+[package]
+name = "yup-core"
+description = "Turns a .yup file into an xlsx workbook, with no input or output of its own."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

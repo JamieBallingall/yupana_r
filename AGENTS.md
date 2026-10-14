@@ -6,7 +6,7 @@ Instructions for coding agents working in this repository.
 
 [README.md](README.md) is the design record: what the project is, the scope of stage 1, what is
 decided, and what is still open. Until the range model and the core syntax are decided there,
-the work is design, not code.
+the work is design, not code: the crates are a stub that keeps the commands below clean.
 
 Where the code and the README disagree, fix whichever is wrong in the same commit. A decision
 made while coding is recorded in the README when it is made.
@@ -28,9 +28,9 @@ into an xlsx workbook, natively and as WebAssembly.
     cargo fmt --check
     cargo clippy --all-targets -- -D warnings
     cargo test
-    cargo build -p <core crate> --target wasm32-unknown-unknown
+    cargo build -p yup-core --target wasm32-unknown-unknown
 
-All four are clean before a commit, once there is code.
+All four are clean before every commit.
 
 ## Style
 

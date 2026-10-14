@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = ["crates/yup-core", "crates/yup-cli"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

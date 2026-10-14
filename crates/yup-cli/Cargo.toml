@@ -1,0 +1,18 @@
+[package]
+name = "yup-cli"
+description = "The command-line tool: reads a .yup file and writes an xlsx workbook."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "yup"
+path = "src/main.rs"
+
+[dependencies]
+yup-core = { path = "../yup-core" }
+
+[lints]
+workspace = true
