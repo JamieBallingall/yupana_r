@@ -4,6 +4,7 @@
 //! The core does no input or output, so that the same code runs natively and as WebAssembly. The
 //! caller reads the files and writes the result.
 
+mod cells;
 mod check;
 mod diagnostic;
 mod elaborate;
@@ -11,12 +12,15 @@ mod functions;
 mod ground;
 mod infer;
 mod lexer;
+mod lower;
 mod parser;
 mod place;
 mod printer;
 mod resolve;
 mod size;
 mod syntax;
+mod xlsx;
+mod zip;
 
 pub use diagnostic::{Diagnostic, Pos, Severity};
 
@@ -54,17 +58,23 @@ pub enum Step {
     Ground,
     /// Checks that nothing collides, for any value of the unknown sizes.
     Check,
+    /// Turns ranges into cells and expressions into the spreadsheet app's formulas.
+    Lower,
+    /// Writes the cells into the parts of an xlsx file.
+    Package,
 }
 
 impl Step {
     /// Every step, in order.
-    pub const ALL: [Step; 6] = [
+    pub const ALL: [Step; 8] = [
         Step::Parse,
         Step::Resolve,
         Step::Infer,
         Step::Place,
         Step::Ground,
         Step::Check,
+        Step::Lower,
+        Step::Package,
     ];
 
     /// The step's name, in lower case, as the command line takes it.
@@ -76,6 +86,8 @@ impl Step {
             Step::Place => "place",
             Step::Ground => "ground",
             Step::Check => "check",
+            Step::Lower => "lower",
+            Step::Package => "package",
         }
     }
 
@@ -98,9 +110,34 @@ fn sorted(mut diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
     diagnostics
 }
 
+/// A workbook, and any warnings found while making it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Built {
+    /// The bytes of the xlsx file.
+    pub xlsx: Vec<u8>,
+    pub warnings: Vec<Diagnostic>,
+}
+
+/// Runs every step and returns the workbook.
+///
+/// ```
+/// let source = "yup 0.1\nrate : 'Rate' Input\nrate = 0.05\nyears = 1 .. 3\n\
+///               growth : 'Growth'\ngrowth = (1 + rate) ^ years\n";
+/// let built = yup_core::build(source).unwrap();
+/// assert!(built.xlsx.starts_with(b"PK"));
+/// assert!(built.warnings.is_empty());
+/// ```
+pub fn build(source: &str) -> Result<Built, Vec<Diagnostic>> {
+    match run(source, Step::Package, true)? {
+        Outcome::Bytes(xlsx, warnings) => Ok(Built { xlsx, warnings }),
+        Outcome::Text(..) => unreachable!("Package gives bytes when asked for them"),
+    }
+}
+
 /// Runs the steps up to and including `step`, and shows its result.
 ///
-/// The steps up to Check show a valid `.yup` file, with more worked out at each step.
+/// The steps up to Check show a valid `.yup` file, with more worked out at each step. Lower
+/// shows the cells and defined names, and Package the parts of the file.
 ///
 /// ```
 /// use yup_core::{Step, show};
@@ -114,38 +151,57 @@ fn sorted(mut diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
 /// );
 /// ```
 pub fn show(source: &str, step: Step) -> Result<Shown, Vec<Diagnostic>> {
+    match run(source, step, false)? {
+        Outcome::Text(text, warnings) => Ok(Shown { text, warnings }),
+        Outcome::Bytes(..) => unreachable!("bytes are given only when asked for"),
+    }
+}
+
+/// What running the steps up to one of them gives.
+enum Outcome {
+    Text(String, Vec<Diagnostic>),
+    Bytes(Vec<u8>, Vec<Diagnostic>),
+}
+
+/// Runs the steps up to `last`. Package gives the file's bytes when `bytes` is set, and a
+/// listing of its parts otherwise.
+fn run(source: &str, last: Step, bytes: bool) -> Result<Outcome, Vec<Diagnostic>> {
     let program = parser::parse(source).map_err(sorted)?;
-    let shown = |text: String| Shown {
-        text,
-        warnings: Vec::new(),
-    };
-    if step == Step::Parse {
-        return Ok(shown(printer::print(&program)));
+    let text = |text: String| Ok(Outcome::Text(text, Vec::new()));
+    if last == Step::Parse {
+        return text(printer::print(&program));
     }
     let model = resolve::resolve(&program).map_err(sorted)?;
     let print = |detail: Detail| printer::print(&elaborate(&program, &model, &detail));
-    if step == Step::Resolve {
-        return Ok(shown(print(Detail::Resolved)));
+    if last == Step::Resolve {
+        return text(print(Detail::Resolved));
     }
     let typed = infer::infer(&program, &model).map_err(sorted)?;
-    if step == Step::Infer {
-        return Ok(shown(print(Detail::Typed(&typed))));
+    if last == Step::Infer {
+        return text(print(Detail::Typed(&typed)));
     }
     let placed = place::place(&program, &model, &typed).map_err(sorted)?;
-    if step == Step::Place {
-        return Ok(shown(print(Detail::Placed(&typed, &placed))));
+    if last == Step::Place {
+        return text(print(Detail::Placed(&typed, &placed)));
     }
     let grounded = ground::ground(&typed, &placed);
-    if step == Step::Ground {
-        return Ok(shown(print(Detail::Grounded(&typed, &grounded, &[]))));
+    if last == Step::Ground {
+        return text(print(Detail::Grounded(&typed, &grounded, &[])));
     }
-    let warnings = check::check(&program, &model, &typed, &grounded).map_err(sorted)?;
-    Ok(Shown {
-        text: print(Detail::Grounded(&typed, &grounded, &warnings)),
-        warnings: warnings
-            .iter()
-            .map(|warning| Diagnostic::warning(warning.pos, warning.message.clone()))
-            .collect(),
+    let found = check::check(&program, &model, &typed, &grounded).map_err(sorted)?;
+    let warnings: Vec<Diagnostic> = found
+        .iter()
+        .map(|warning| Diagnostic::warning(warning.pos, warning.message.clone()))
+        .collect();
+    if last == Step::Check {
+        let text = print(Detail::Grounded(&typed, &grounded, &found));
+        return Ok(Outcome::Text(text, warnings));
+    }
+    let workbook = lower::lower(&program, &model, &typed, &grounded).map_err(sorted)?;
+    Ok(match (last, bytes) {
+        (Step::Lower, _) => Outcome::Text(lower::listing(&workbook), warnings),
+        (_, false) => Outcome::Text(xlsx::listing(&workbook), warnings),
+        (_, true) => Outcome::Bytes(xlsx::package(&workbook), warnings),
     })
 }
 
@@ -253,9 +309,96 @@ growth = tail revenue / lag 1 revenue - 1
     }
 
     #[test]
+    fn lower_writes_formulas_and_names() {
+        assert_eq!(
+            text(FORECAST, Step::Lower),
+            "\
+sheet 'Inputs'
+  B2     'Horizon'
+  D2     5  [input]
+sheet 'Forecast'
+  B2     'Revenue'  [bold]
+  B3     'Period'
+  D3     =_xlfn.SEQUENCE(1,horizon)
+  B4     'Revenue'
+  D4     =100*1.1^period
+  B5     'Growth'
+  E5     =_xlfn.DROP(revenue,,1)/_xlfn.DROP(revenue,,-1)-1
+names
+  growth = _xlfn.ANCHORARRAY(Forecast!$E$5)
+  horizon = Inputs!$D$2
+  period = _xlfn.ANCHORARRAY(Forecast!$D$3)
+  revenue = _xlfn.ANCHORARRAY(Forecast!$D$4)
+"
+        );
+    }
+
+    #[test]
+    fn lower_writes_list_inputs_cell_by_cell() {
+        let listing = text(SEGMENTS, Step::Lower);
+        for line in [
+            "  D2     100  [input]",
+            "  D4     300  [input]",
+            "  D6     =base*1.1^year",
+            "  D9     =_xlfn.BYCOL(revenue,_xlfn.LAMBDA(_xlpm.x,SUM(_xlpm.x)))",
+            "  base = Sheet1!$D$2:$D$4",
+        ] {
+            assert!(listing.contains(line), "{line}\n{listing}");
+        }
+    }
+
+    #[test]
+    fn a_local_binding_is_written_into_the_formulas_that_use_it() {
+        let source = "yup 0.1\nyears = 1 .. 4\nprior = lag 1 years\nratio : 'Ratio'\nratio = \
+                      tail years / prior\nlow : 'Low'\nlow = min (years * 2) 3\n";
+        let listing = text(source, Step::Lower);
+        assert!(
+            listing.contains(
+                "=_xlfn.DROP(_xlfn.SEQUENCE(1,4),,1)/_xlfn.DROP(_xlfn.SEQUENCE(1,4),,-1)"
+            ),
+            "{listing}"
+        );
+        assert!(
+            listing.contains(
+                "=_xlfn.LET(_xlpm.a,_xlfn.SEQUENCE(1,4)*2,_xlpm.b,3,IF(_xlpm.a<_xlpm.b,_xlpm.a,\
+                 _xlpm.b))"
+            ),
+            "{listing}"
+        );
+    }
+
+    #[test]
+    fn build_gives_an_xlsx_with_every_part() {
+        let built = build(FORECAST).expect("builds");
+        let names: Vec<String> = zip::read(&built.xlsx)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "[Content_Types].xml",
+                "_rels/.rels",
+                "xl/workbook.xml",
+                "xl/_rels/workbook.xml.rels",
+                "xl/styles.xml",
+                "xl/sharedStrings.xml",
+                "xl/metadata.xml",
+                "xl/worksheets/sheet1.xml",
+                "xl/worksheets/sheet2.xml",
+            ]
+        );
+        assert_eq!(
+            build(FORECAST).expect("builds again"),
+            built,
+            "the same bytes"
+        );
+    }
+
+    #[test]
     fn showing_a_shown_file_changes_nothing() {
         for source in [FORECAST, SEGMENTS] {
-            for step in Step::ALL {
+            for step in Step::ALL.into_iter().filter(|&step| step <= Step::Check) {
                 let once = text(source, step);
                 assert_eq!(text(&once, step), once, "{}", step.name());
             }

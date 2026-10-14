@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::cells::{looks_like_cell, looks_like_r1c1};
 use crate::diagnostic::{Diagnostic, Pos};
 use crate::functions::Builtin;
 use crate::syntax::{Expr, ExprKind, ItemKind, Program, Signature, SizeKind, Text};
@@ -563,35 +564,6 @@ fn name_error(name: &str, pos: Pos) -> Option<Diagnostic> {
         pos,
         format!("`{name}` {problem}; choose another name"),
     ))
-}
-
-/// Whether a name reads as an A1 cell reference: one to three letters, then digits.
-fn looks_like_cell(name: &str) -> bool {
-    let letters = name.bytes().take_while(u8::is_ascii_lowercase).count();
-    let digits = &name[letters..];
-    (1..=3).contains(&letters) && !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
-}
-
-/// Whether a name reads as an R1C1 reference: `r`, `c`, `rc`, or either with digits.
-fn looks_like_r1c1(name: &str) -> bool {
-    let bytes = name.as_bytes();
-    let digits_from = |mut i: usize| {
-        while bytes.get(i).is_some_and(u8::is_ascii_digit) {
-            i += 1;
-        }
-        i
-    };
-    let mut i = 0;
-    let row = bytes.first() == Some(&b'r');
-    if row {
-        i = digits_from(1);
-    }
-    if bytes.get(i) == Some(&b'c') {
-        i = digits_from(i + 1);
-    } else if !row {
-        return false;
-    }
-    i == bytes.len()
 }
 
 fn sheet_name_error(name: &str, pos: Pos) -> Option<Diagnostic> {
