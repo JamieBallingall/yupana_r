@@ -3,9 +3,10 @@
 Working name: **yupana_r**. The repository is `yupana_r`; the project and crate names are not
 decided. There is an existing **yupana** repo which this will eventually replace.
 
-> **Seed capsule,** drafted 2026-10-14. This is a design record, not documentation of code.
-> **Beyond a stub that builds and passes its checks, no code is written until the core syntax is
-> decided.** The range model is settled in outline (below).
+> **Seed capsule,** drafted 2026-10-14. This is a design record, not documentation of code. A
+> first version of the whole pipeline, `.yup` 0.1, was built on 2026-10-14 to try the design end to
+> end. Its syntax is provisional: [docs/language.md](docs/language.md) describes it, and
+> [Built for 0.1](#built-for-01) lists what was decided on the way.
 
 ## What this is
 
@@ -35,6 +36,17 @@ tool runs natively as a command and in the browser as WebAssembly.
 LLM that reads the workbook, decides what matters (with a person where needed) and writes the
 `.yup` from scratch. That happens outside this repository. A lossy automatic conversion would drop
 things silently or bury the user in warnings.
+
+## Trying it
+
+    cargo run -p yup-cli -- build examples/forecast.yup -o target/forecast.xlsx
+    cargo run -p yup-cli -- check examples/segments.yup
+    cargo run -p yup-cli -- show place examples/segments.yup
+
+`yup build` writes the workbook, by default beside the `.yup` file. `yup show <step>` prints what
+any step makes of a file: the steps up to Check print a `.yup` file with more worked out, Lower
+prints the cells, and Package the parts of the xlsx file. [examples](examples) has three files to
+start from.
 
 ## Stage 1: scope
 
@@ -92,10 +104,11 @@ per member of a set of unknown size (it becomes one two-dimensional range instea
 ## Build order
 
 1. **Syntax.** Settle the core syntax and the open parts of the range model; write the
-   specification. **Nothing below starts until this is done.**
-2. Lexer, parser, checker.
-3. The xlsx writer.
-4. Formatting.
+   specification. A provisional 0.1 is built, to try the design; the steps below were begun for
+   it, and settling the syntax may change them.
+2. Lexer, parser, checker. *Built for 0.1.*
+3. The xlsx writer. *Built for 0.1.*
+4. Formatting. *Begun: number formats, bold, italic, blue inputs and column widths.*
 5. The website and the MCP server.
 
 ## Decided so far
@@ -103,8 +116,8 @@ per member of a set of unknown size (it becomes one two-dimensional range instea
 - Rust. A core crate does no input or output and always builds for `wasm32-unknown-unknown`. A
   command-line crate does the reading and writing. Wrappers for the web and for MCP come later.
 - The crates are `yup-core` and `yup-cli`, and the command is `yup`: provisional names until open
-  question 12 is settled. For now `yup` reads a source on standard input and writes the result to
-  standard output; how it finds its input files is part of open question 4.
+  question 12 is settled. The command has `build`, `check` and `show <step>`; how it finds input
+  files is part of open question 4.
 - The project is licensed under Apache-2.0 (see [LICENSE](LICENSE)).
 - `.yup` is a language of its own, with its own lexer and parser, and is designed to be easy to
   lex.
@@ -122,6 +135,50 @@ per member of a set of unknown size (it becomes one two-dimensional range instea
 - Comments start with `//`.
 - Operators are preferred to function calls where they read well, such as `1 .. n` for a sequence.
 - Inputs come both inline, as literals, and from CSV or JSON files.
+
+## Built for 0.1
+
+Decided while building the first version, on 2026-10-14, to have something to try. Each is
+provisional, and names the open question it answers where there is one.
+
+- **The first line** is `yup 0.1`, and the extension stays `.yup` for now (question 11).
+- **Roles.** A binding is shown when its signature has a label, an input when the signature also
+  says `Input`, and local otherwise. A signature without a label still has its size checked.
+- **Exporting** (question 13 and observation 4). Every shown binding and input becomes a defined
+  name, and formulas refer to them by name. A local binding is written into each formula that
+  uses it; a LET would avoid repeating it, and is left for later.
+- **Everything spills** (question 14). Every shown formula is a dynamic array formula, whatever its
+  size; writing a formula into each cell of a range of fixed size is left for later.
+- **Recording a spill** (question 20). The formula sits in its anchor cell as an array formula
+  whose range is the anchor alone, with the cell metadata that marks it dynamic ([MS-XLSX]). No
+  values are cached, and the workbook asks to be calculated in full when it opens. A spilled
+  range's defined name is `_xlfn.ANCHORARRAY` of its anchor, which the app shows as `D4#`. The
+  examples were opened in the spreadsheet app, outside this repository: they opened without an
+  offer to repair, calculated, and spilled as intended.
+- **Formats of spilled cells.** The cells a formula spills into are not in the file, so every row a
+  styled range spills along carries the range's style. A range of unknown height is styled in its
+  anchor only.
+- **Signatures keep their sizes.** When a signature's size agrees with the definition, the range
+  takes the size as the signature writes it, so a fixed size named there (`[s, 1]`) carries into
+  the layout below it (`@ (s + 3, 4)`).
+- **`lag`** works along columns. `from` gives the first values of `lag 1` only (question 1).
+- **Names** of bindings and sizes are lower case ASCII and follow the rules for defined names: not
+  a cell (`tax2026`), not R1C1 (`r`, `c1`, `rc`), not a function or keyword (question 2).
+- **The default sheet** for items before any `sheet` statement is `Sheet1` (question 18).
+- **A possible `#SPILL!`** is a warning, and the workbook is still written (question 19).
+- **Pins** are written `@ (row, column)`, numbers as in the elaborated forms (question 17).
+- **Layout.** Row 1 and column A are margins. Labels and headings go in column B, column C stays
+  empty, and position 0 of a range's columns is column D. Headings are bold.
+- **Functions.** `min` and `max` work position by position, and `minimum` and `maximum` reduce, as
+  in Haskell. Arguments that say how much come first (`lag 1 x`, `round 2 x`). Text is joined
+  with `++`. There is no logical `and` or `or` yet.
+- **Inputs** are literals or lists of literals, written in blue, as financial models usually show
+  inputs. Input files (question 4) are not built yet.
+- **Number formats** are checked conservatively before they reach the workbook; literal text in a
+  format goes in double quotes.
+- **The zip** stores its parts without compression and with a fixed timestamp, so the same file
+  always gives the same bytes (questions 9 and 23).
+- **Unnamed unknown sizes** are called after the binding that introduced them, such as `year_n`.
 
 ## The range model
 
@@ -400,47 +457,54 @@ Principles for easy lexing, proposed:
 
 ## Other open questions
 
-1. **The lag operator:** the syntax for a seed (`lag 1 closing from principal` has the full span
-   `[0, n)`), and the direction for a two-dimensional range.
-2. **Name rules:** an exported binding must be a legal defined name, and must not read as a cell
-   reference (`tax2026` is a cell) or as `r1c1`, `true` and the like. Do the same rules apply to
-   every binding, so that exporting one never forces a rename? Are sheet-scoped names ever needed?
+Where 0.1 gives a provisional answer, it follows in italics; [Built for 0.1](#built-for-01) has the
+reasons.
+
+1. **The lag operator:** the seed for a lag of more than one, and the direction for a
+   two-dimensional range. *0.1: along columns; `from` with `lag 1` only.*
+2. **Name rules:** are sheet-scoped names ever needed? *0.1: every binding follows the rules for
+   defined names, so that exporting one never forces a rename.*
 3. **An escape hatch for raw formula text:** allowed, and if so how marked?
 4. **Input files:** the CSV dialect and the JSON shape, how cells are typed (number, text, logical,
    blank), how a `.yup` binds an input to a range, and how an input table declares its size
-   variable.
+   variable. *0.1: not built; inputs are written in the file.*
 5. **Dates:** a literal syntax, written as serial numbers in the 1900 date system.
-6. **Logicals and errors:** literal syntax for TRUE and FALSE, and whether error literals exist.
+6. **Logicals and errors:** whether error literals exist, and how `and`, `or` and `not` are
+   written. *0.1: `true` and `false`.*
 7. **Formatting syntax:** inline on each range, named styles applied to ranges, or both, and the
-   defaults.
+   defaults. *0.1: inline, `Format "…"`, `Bold` and `Italic` in the signature.*
 8. **Validity without the app:** schema validation in the tests and reading by independent
    readers. Opening files in the spreadsheet app itself is a check made outside this repository.
-9. **Dependencies:** zip (a store-only zip with its own CRC-32 is small; deflate is a dependency or
-   a real chunk of code), `wasm-bindgen` for the web, and whatever the MCP server needs.
+   *0.1: the tests check that every part is well formed and listed, and that the zip reads back.*
+9. **Dependencies:** `wasm-bindgen` for the web, and whatever the MCP server needs. *0.1: none; the
+   zip is stored, with its own CRC-32.*
 10. **The MCP server's tools:** check a file, print any step's `.yup`, write the xlsx.
 11. **The file:** keep the `.yup` extension? Either way, the first line identifies the version, so
-    each reader refuses the other format's files.
+    each reader refuses the other format's files. *0.1: `.yup`, and the first line is `yup 0.1`.*
 12. **Names:** of the project and its crates.
-13. **Exporting bindings:** how a binding is marked for export (or whether export is the default),
-    what a binding that is not exported becomes in the workbook (A1 references, a LET variable, or
-    an inlined expression), and whether written formulas use defined names or A1 references.
+13. **Exporting bindings:** whether a shown binding can stay unexported, and whether a local one
+    becomes a LET variable rather than being repeated. *0.1: every shown binding is a defined
+    name, formulas use those names, and a local binding is written where it is used.*
 14. **Fixed sizes:** does a range of `Fixed` size spill, or is it filled with one formula per cell?
+    *0.1: everything spills.*
 15. **Recurrences under spill:** the rewrite into SCAN or REDUCE, and what to do with coupled
-    balances.
+    balances. *0.1: not built; a recurrence is refused as a circular definition.*
 16. **Signature and layout syntax:** the order and form of size, span, label, anchor and
     attributes in a signature; how blocks, orientation (across or down), two-dimensional blocks
     and pinned cells are written; and how an elaborated file writes spans and numeric anchors.
+    *0.1: see [docs/language.md](docs/language.md).*
 17. **Pinned cells in the surface:** written in A1, as the author sees the workbook, or as numbers
-    like every elaborated form?
-18. **A file with no `sheet` statement:** a default sheet, or an error?
-19. **A possible `#SPILL!`:** an error or a warning?
-20. **Recording a spill of unknown extent:** [MS-XLSX] describes how a formula is marked as a
-    dynamic array. What range the file records for one whose extent is unknown and whose values
-    are not cached needs checking against the specification.
+    like every elaborated form? *0.1: numbers.*
+18. **A file with no `sheet` statement:** a default sheet, or an error? *0.1: a sheet called
+    `Sheet1`.*
+19. **A possible `#SPILL!`:** an error or a warning? *0.1: a warning.*
+20. **Recording a spill of unknown extent:** *0.1: the anchor alone as the formula's range, with
+    the dynamic array metadata, and no cached values. The spreadsheet app opens and spills it.*
 21. **Time aggregation:** rolling monthly ranges up to annual ones (`sum revenue by year`), which
     maps one size variable onto another.
-22. **The function library:** which of the app's functions stage 1 supports.
-23. **Deterministic output:** does the same input always give byte-identical xlsx?
+22. **The function library:** which of the app's functions stage 1 supports. *0.1: the eighteen in
+    [docs/language.md](docs/language.md).*
+23. **Deterministic output:** does the same input always give byte-identical xlsx? *0.1: yes.*
 
 ## References
 

@@ -5,11 +5,16 @@ Instructions for coding agents working in this repository.
 ## Read first
 
 [README.md](README.md) is the design record: what the project is, the scope of stage 1, what is
-decided, and what is still open. Until the core syntax is decided there, the work is design, not
-code: the crates are a stub that keeps the commands below clean.
+decided, and what is still open. [docs/language.md](docs/language.md) describes the language as
+the code implements it. The code is a provisional version 0.1, built to try the design end to end;
+the syntax is not settled.
 
-Where the code and the README disagree, fix whichever is wrong in the same commit. A decision
-made while coding is recorded in the README when it is made.
+Where the code and these documents disagree, fix whichever is wrong in the same commit. A
+decision made while coding is recorded in the README when it is made, and a change to the
+language is made in docs/language.md too. Every file in [examples](examples) builds in the tests.
+
+The core crate is laid out by step, one module each, from `parser` to `xlsx`; `lib.rs` runs them
+in order, and `elaborate` prints what each step up to Check has worked out back into `.yup`.
 
 ## Human
 
