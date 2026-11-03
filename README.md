@@ -121,6 +121,7 @@ per member of a set of unknown size (it becomes one two-dimensional range instea
 - The project is licensed under Apache-2.0 (see [LICENSE](LICENSE)).
 - `.yup` is a language of its own, with its own lexer and parser, and is designed to be easy to
   lex.
+- The core syntax is S3, like Haskell or ML, decided on 2026-11-03. See [Core syntax](#core-syntax).
 - Formulas are given range by range. The tool infers every range's size and does the layout.
 - Each binding is a pair of lines: a signature (`name : …`), which carries the label and, later,
   formatting and type information, and a definition (`name = …`).
@@ -430,7 +431,19 @@ three spans end at n.
   same mistake.
 - **Option S3: like Haskell or ML.** `exp x`, `if a then b else c`, `let … in …`, `\x y -> …` for
   a LAMBDA, and `discount r t = 1 / (1 + r) ^ t` as a named LAMBDA. It makes clear that `.yup` is
-  a language of its own that is compiled to the app's formulas. **This is the current leaning.**
+  a language of its own that is compiled to the app's formulas. **Decided on 2026-11-03.**
+
+**Why S3.** A `.yup` file is written from scratch, chiefly by an LLM. Converting a workbook from
+xlsx happens outside this repository, so familiarity with the app's formulas counts for less than
+freedom from traps. The trap that matters most is deep nesting: LLMs lose count of closing
+parentheses, above all in LAMBDA, LET and nested IF. Most of that nesting is the tool's to write,
+not the author's: the range model and Lower turn the three flat lines of a loan balance into a SCAN
+of a LAMBDA around a LET. S3 removes much of the rest. A function is defined without LAMBDA, a
+call has no argument list and no commas, and `if … then … else` and `let … in …` end at a keyword
+or a new line rather than at a counted `)`. Nested calls still need parentheses
+(`round 2 (max a b)`). The habits S3 cannot prevent are caught instead: a call written as
+`f(a, b)`, a function name in upper case and an A1 reference are refused, with their line and
+column. An error that also says what to write instead is still to do.
 
 Under S3 these need settling:
 
@@ -465,6 +478,10 @@ Principles for easy lexing, proposed:
   Numbers in JSON's grammar, as in `.yup` 0.0.2.
 
 ## Options considered and set aside
+
+- **Core syntax S1 and S2,** and **S-expressions.** See [Core syntax](#core-syntax) for S1 and S2.
+  S-expressions have the simplest grammar of all, but they put every formula in nested
+  parentheses, which LLMs miscount, and spreadsheet formulas written that way are unfamiliar.
 
 - **Extent per range** (fill with an explicit extent, spill with the extent inferred, the row
   model, or a choice per range). Replaced by size variables, which infer extents and make the
