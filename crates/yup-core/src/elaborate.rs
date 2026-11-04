@@ -48,6 +48,9 @@ pub fn elaborate(program: &Program, model: &Model, detail: &Detail) -> Program {
                     .get_mut(&item)
                     .expect("sizes are written before places");
                 let pos = sig.name.pos;
+                // A cell the author wrote as `$B$2` stays so, and only those, so that the cells
+                // the rest are placed from still stand out once every place is a cell.
+                let absolute = matches!(sig.place, Some(Placement::At { absolute: true, .. }));
                 sig.place = Some(Placement::At {
                     sheet: Ident {
                         name: model.bindings[model.sheets[sheet].binding].name.clone(),
@@ -55,6 +58,7 @@ pub fn elaborate(program: &Program, model: &Model, detail: &Detail) -> Program {
                     },
                     row,
                     column,
+                    absolute,
                     pos,
                 });
             }

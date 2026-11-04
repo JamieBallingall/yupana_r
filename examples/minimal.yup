@@ -17,7 +17,7 @@ two_places = { format = '0.00' }
 total : Style Cell
 total = { format = '#,##0.00', font = { bold = True } }
 
-price_label : Label label at sales B2
+price_label : Label label at sales $B$2
 price_label = "Price"
 
 price : Value Number two_places price_label right 2

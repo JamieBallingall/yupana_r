@@ -20,7 +20,7 @@ forecast = { name = 'Forecast' }
 label : Style Cell
 label = { format = '@' }
 
-horizon_label : Label label at forecast B2
+horizon_label : Label label at forecast $B$2
 horizon_label = "Forecast horizon (years)"
 
 horizon : Value Number _ horizon_label right 2
@@ -69,7 +69,7 @@ A signature's parts come in this order:
 | style | `money`, or `_` for the default | `Formula`, `Value`, `Label`: required |
 | size | `[1, n - 1]` | `Formula`, `Value`, `Label`, `Local`: optional, checked |
 | start | `start [0, 1]` | `Formula`, `Value`, `Label`, `Local`: optional, checked |
-| place | `at forecast B2`, `revenue down 2` | `Formula`, `Value`, `Label`: required |
+| place | `at forecast $B$2`, `revenue down 2` | `Formula`, `Value`, `Label`: required |
 
 The type of a cell is `Number`, `Text` or `Logical`, the kinds of value the spreadsheet app's TYPE
 function tells apart. It is optional, and checked, for `Formula`, `Value` and `Local`, and not
@@ -254,7 +254,9 @@ Each formula, value and label says where its cells go, in its signature. The top
 its values is its anchor.
 
 - `at forecast B2` puts the anchor at a cell of a sheet, in A1 notation. Each sheet has at least
-  one binding placed this way.
+  one binding placed this way. `at forecast $B$2` means the same, and marks the cell as one that
+  never moves; `$` goes before both the column and the row or before neither, and nowhere else
+  in a file. Every step prints it as it was written.
 - `revenue_label right 2` puts it beside another binding. A move is `left`, `right`, `up` or
   `down`, with a distance that defaults to 1, and a placement has at most one move along each
   axis, in either order.

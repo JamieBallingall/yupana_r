@@ -1,6 +1,7 @@
 //! Cells and sheets as the workbook names them: A1 notation, and quoted sheet names.
 //!
-//! Lower is the only step that writes these; before it, a cell is a pair of numbers.
+//! The parser reads a cell in A1 notation, and the printer and Lower write one; in between, a
+//! cell is a pair of numbers.
 
 /// The number of rows on a sheet, from the spreadsheet app's published limits.
 pub const MAX_ROWS: i64 = 1_048_576;

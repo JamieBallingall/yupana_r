@@ -14,7 +14,7 @@ pub enum Token {
     /// A name that starts with a lower-case letter: a binding, a function or a keyword.
     Name(String),
     /// A word that starts with an upper-case letter: a role, a type or a constructor (`Formula`,
-    /// `Number`, `Thin`), or a cell in A1 notation (`B2`).
+    /// `Number`, `Thin`), or a cell in A1 notation (`B2`, `$B$2`).
     Word(String),
     /// A number in JSON's grammar, without a sign. The text is kept so that a printed file
     /// shows the number as it was written.
@@ -200,6 +200,9 @@ impl Lexer {
                 }
                 '/' if self.peek_second() == Some('/') => self.comment(pos),
                 'a'..='z' | 'A'..='Z' | '_' => self.name(pos)?,
+                '$' if self.peek_second().is_some_and(|c| c.is_ascii_uppercase()) => {
+                    self.name(pos)?;
+                }
                 '0'..='9' => self.number(pos)?,
                 '"' => self.string(pos)?,
                 '\'' => self.text(pos)?,
@@ -250,7 +253,14 @@ impl Lexer {
     fn name(&mut self, pos: Pos) -> Result<(), Diagnostic> {
         let mut text = String::new();
         while let Some(c) = self.peek() {
-            if !(c.is_ascii_alphanumeric() || c == '_') {
+            // A `$` before a cell's letters or its row, as in `$B$2`, is part of the word, so
+            // that the parser sees the cell as it was written.
+            let dollar = c == '$'
+                && !text.starts_with(|c: char| c.is_ascii_lowercase())
+                && self
+                    .peek_second()
+                    .is_some_and(|c| c.is_ascii_alphanumeric());
+            if !(c.is_ascii_alphanumeric() || c == '_' || dollar) {
                 break;
             }
             self.bump();
@@ -266,7 +276,7 @@ impl Lexer {
                 format!("`{text}` starts with `_`; a name starts with a letter"),
             ));
         }
-        if text.starts_with(|c: char| c.is_ascii_uppercase()) {
+        if text.starts_with(|c: char| c.is_ascii_uppercase() || c == '$') {
             self.push(Token::Word(text), pos);
         } else if text.contains(|c: char| c.is_ascii_uppercase()) {
             return Err(Diagnostic::error(
@@ -526,6 +536,13 @@ impl Lexer {
             '|' if next == Some('|') => two(Token::OrOr),
             '|' => {
                 return Err(Diagnostic::error(pos, "a single `|`; logical or is `||`"));
+            }
+            '$' => {
+                return Err(Diagnostic::error(
+                    pos,
+                    "`$` goes only in the cell a binding is placed at, before its column and its \
+                     row, as in `at forecast $B$2`",
+                ));
             }
             c if c.is_alphabetic() => {
                 return Err(Diagnostic::error(

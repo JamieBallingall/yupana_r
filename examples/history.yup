@@ -33,7 +33,7 @@ percent = { format = '0.0%' }
 
 // Forecast
 
-growth_rate_label : Label label at forecast B2
+growth_rate_label : Label label at forecast $B$2
 growth_rate_label = "Growth in units per year"
 
 growth_rate : Value Number percent growth_rate_label right 2
@@ -80,7 +80,7 @@ units = last_units * (1 + growth_rate) ^ step
 // Sales history: the labels name the table's columns, and the table goes below them, with as
 // many rows as the file has, counted when the workbook is written.
 
-year_header : Label heading at sales_history B2
+year_header : Label heading at sales_history $B$2
 year_header = "Year"
 
 units_header : Label heading year_header right

@@ -23,7 +23,7 @@ header = label
 units : Style Cell
 units = { format = '#,##0' }
 
-opening_label : Label label at stock_sheet B2
+opening_label : Label label at stock_sheet $B$2
 opening_label = "Stock at the start"
 
 opening : Value Number units opening_label right 2

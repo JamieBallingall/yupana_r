@@ -6,7 +6,7 @@
 //! Precedence, from loosest to tightest: `if` and `..`; `||`; `&&`; comparisons; `++`; `+` and
 //! `-`; `*` and `/`; negation; `^`; application of a function to its arguments.
 
-use crate::cells::{MAX_COLUMNS, MAX_ROWS, parse_cell};
+use crate::cells::{self, MAX_COLUMNS, MAX_ROWS, parse_cell};
 use crate::diagnostic::{Diagnostic, Pos};
 use crate::functions::Builtin;
 use crate::lexer::{Lexeme, Token, lex};
@@ -442,7 +442,7 @@ impl Parser {
             let Some(word) = self.word() else {
                 return Err(self.unexpected("a cell, such as `B2`"));
             };
-            let Some((row, column)) = parse_cell(&word) else {
+            let Some((row, column)) = parse_cell(&word.replace('$', "")) else {
                 return Err(Diagnostic::error(
                     cell_pos,
                     format!(
@@ -451,11 +451,29 @@ impl Parser {
                     ),
                 ));
             };
+            // A cell a binding is placed at never moves, so `$` before only one of its column and
+            // its row would say something that is not so.
+            let absolute = word.contains('$');
+            let whole = cells::absolute(
+                u32::try_from(row).expect("a cell's row fits in 32 bits"),
+                u32::try_from(column).expect("a cell's column fits in 32 bits"),
+            );
+            if absolute && word != whole {
+                return Err(Diagnostic::error(
+                    cell_pos,
+                    format!(
+                        "`{word}` fixes only part of the cell; a binding's cell never moves, so \
+                         write `{whole}` or `{}`",
+                        whole.replace('$', "")
+                    ),
+                ));
+            }
             self.advance();
             return Ok(Some(Placement::At {
                 sheet,
                 row,
                 column,
+                absolute,
                 pos,
             }));
         }
@@ -823,12 +841,18 @@ impl Parser {
                 if *self.peek_second() == Token::LParen {
                     return Err(Diagnostic::error(pos, app_function_hint(&word)));
                 }
-                if parse_cell(&word).is_some() {
+                if parse_cell(&word.replace('$', "")).is_some() {
                     return Err(Diagnostic::error(
                         pos,
                         format!(
                             "`{word}` reads as a cell; formulas in .yup name bindings, not cells"
                         ),
+                    ));
+                }
+                if word.contains('$') {
+                    return Err(Diagnostic::error(
+                        pos,
+                        format!("`{word}`: `$` goes only in the cell a binding is placed at"),
                     ));
                 }
                 ExprKind::Constructor(word)
@@ -1062,6 +1086,37 @@ mod tests {
                 "2:34: error: a move follows the binding it is made from; if `right` is meant to \
                  move from the name before it, that name was read as the style, which comes first: \
                  write a style, or `_` for the default, before it"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_cell_may_be_written_with_dollars_but_only_whole() {
+        let at = signature("x : Label _ at forecast $B$2");
+        assert!(matches!(
+            at.place,
+            Some(Placement::At {
+                row: 2,
+                column: 2,
+                absolute: true,
+                ..
+            })
+        ));
+        assert_eq!(
+            errors("yup 0.2\nx : Label _ at main $B2\ny : Label _ at main B$2\nz = $B$2 + 1\n"),
+            [
+                "2:21: error: `$B2` fixes only part of the cell; a binding's cell never moves, so \
+                 write `$B$2` or `B2`",
+                "3:21: error: `B$2` fixes only part of the cell; a binding's cell never moves, so \
+                 write `$B$2` or `B2`",
+                "4:5: error: `$B$2` reads as a cell; formulas in .yup name bindings, not cells",
+            ]
+        );
+        assert_eq!(
+            errors("yup 0.2\nw = $b$2\n"),
+            [
+                "2:5: error: `$` goes only in the cell a binding is placed at, before its column and \
+                 its row, as in `at forecast $B$2`"
             ]
         );
     }

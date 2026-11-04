@@ -30,7 +30,7 @@ total = money { font = { bold = True }, border = { top = { weight = Thin } } }
 
 // Inputs
 
-horizon_label : Label label at inputs B2
+horizon_label : Label label at inputs $B$2
 horizon_label = "Forecast horizon (years)"
 
 horizon : Value Number _ horizon_label right 2
@@ -50,7 +50,7 @@ segments = csv "segments.csv"
 
 // Revenue
 
-year_label : Label label at revenue_sheet B2
+year_label : Label label at revenue_sheet $B$2
 year_label = "Year"
 
 year : Formula Number _ year_label right 2

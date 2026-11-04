@@ -33,7 +33,7 @@ total = money
 
 // Inputs
 
-amount_label : Label label at inputs B2
+amount_label : Label label at inputs $B$2
 amount_label = "Amount borrowed"
 
 amount : Value Number money amount_label right 2
@@ -59,7 +59,7 @@ horizon = 7
 
 // Loan
 
-year_label : Label label at loan B2
+year_label : Label label at loan $B$2
 year_label = "Year"
 
 year : Formula Number _ year_label right 2

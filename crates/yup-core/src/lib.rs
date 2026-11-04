@@ -329,6 +329,24 @@ growth = tail revenue / lag 1 revenue - 1
     }
 
     #[test]
+    fn a_cell_written_with_dollars_keeps_them_and_means_the_same() {
+        let source = "a : Value Number _ at main $B$2\na = 1\nb : Value Number _ a down\nb = 2\n";
+        assert_eq!(body(&text(source, Step::Parse)), source);
+        assert_eq!(
+            body(&text(source, Step::Ground)),
+            "a : Value Number _ [1, 1] at main $B$2\na = 1\nb : Value Number _ [1, 1] at main \
+             B3\nb = 2\n"
+        );
+        let plain = source.replace("$B$2", "B2");
+        let built = |source: &str| {
+            build(&file(source), &Inputs::new())
+                .unwrap_or_else(|errors| panic!("{errors:?}"))
+                .xlsx
+        };
+        assert!(built(source) == built(&plain));
+    }
+
+    #[test]
     fn ground_replaces_fixed_sizes_by_their_values() {
         let source = "s : Size Fixed\ns = 3\nbase : Formula _ [s, 1] at main D2\nbase = [100; \
                       200; 300]\nyear : Formula _ base down 1\nyear = 1 .. 5\ntotal : Formula _ \

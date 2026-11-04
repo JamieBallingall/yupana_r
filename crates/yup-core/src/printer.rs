@@ -3,7 +3,7 @@
 //! Every step up to Check shows its result this way. The spacing and the parentheses are the
 //! printer's own, so reading a printed file and printing it again gives the same text.
 
-use crate::cells::cell_name;
+use crate::cells::{self, cell_name};
 use crate::syntax::{
     BinOp, Expr, ExprKind, Field, Item, ItemKind, Placement, Program, Signature, SizeKind,
     SizeSyntax, StyleName, Type,
@@ -106,12 +106,19 @@ fn signature(sig: &Signature) -> String {
     }
     match &sig.place {
         Some(Placement::At {
-            sheet, row, column, ..
+            sheet,
+            row,
+            column,
+            absolute,
+            ..
         }) => {
-            let cell = cell_name(
-                u32::try_from(*row).expect("the parser keeps a cell on the sheet"),
-                u32::try_from(*column).expect("the parser keeps a cell on the sheet"),
-            );
+            let row = u32::try_from(*row).expect("the parser keeps a cell on the sheet");
+            let column = u32::try_from(*column).expect("the parser keeps a cell on the sheet");
+            let cell = if *absolute {
+                cells::absolute(row, column)
+            } else {
+                cell_name(row, column)
+            };
             parts.push(format!("at {} {cell}", sheet.name));
         }
         Some(Placement::Beside { reference, moves }) => {

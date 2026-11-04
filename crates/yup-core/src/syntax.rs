@@ -325,6 +325,9 @@ pub enum Placement {
         sheet: Ident,
         row: i64,
         column: i64,
+        /// Whether the cell was written `$B$2`. It means the same as `B2`, and is kept so that a
+        /// cell everything else is placed from can be marked as one that never moves.
+        absolute: bool,
         pos: Pos,
     },
     /// `revenue down 1 right 1 from west`: beside another binding.

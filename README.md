@@ -286,15 +286,15 @@ against relative placement, recorded in
 [Options considered and set aside](#options-considered-and-set-aside), no longer holds.
 
 ```text
-horizon_label : Label label at forecast B2
+horizon_label : Label label at forecast $B$2
 horizon       : Value Number _ horizon_label right 2
 base_label    : Label label horizon_label down
 revenue       : Formula Number money revenue_label right 2
 growth        : Formula Number percent revenue down 1 right 1 from west
 ```
 
-- **A root** is placed with `at`, a sheet and a cell in A1 notation: `at forecast B2`. Each sheet
-  has at least one root.
+- **A root** is placed with `at`, a sheet and a cell in A1 notation: `at forecast B2`, or
+  `at forecast $B$2`, which means the same. Each sheet has at least one root.
 - **A move** is `left`, `right`, `up` or `down`, with a distance that defaults to 1. A placement
   has at most one move along each axis, and their order does not matter.
 - **Each move counts in cells from the reference's cell on the side it heads toward:** `right`
@@ -450,6 +450,13 @@ is provisional. [docs/language.md](docs/language.md) describes 0.2 as it is buil
   along an axis puts the two side by side there, so it is not checked.
 - **Place prints as Infer does.** A place that depends on a fixed size, such as row `s + 3`, has
   no A1 form; Ground prints every place as a cell.
+- **`$` in a root's cell** (decided 2026-11-04). `at inputs $B$2` means the same as
+  `at inputs B2`: a root is the cell everything else is placed from, and `$` marks it as one that
+  never moves, as the app marks a reference that does not move when copied. Only the whole form is
+  allowed: `$B2` or `B$2` would fix half a cell that never moves at all, so each is refused with
+  both whole forms named. Every step keeps the `$` as written, Ground included, where the cells
+  worked out from moves are written without it, so the roots still stand out. The examples write
+  their roots with `$`. `$` anywhere else is an error.
 - **Types are worked out** for every formula, value and local where its cells hold one type, and
   written into its signature from Infer on. Arithmetic on text is an error. `na` builds `#N/A`,
   whose type goes with any other.
@@ -684,7 +691,7 @@ at a cell or below another label, and each range two columns to the right of its
 ```text
 n : Size Unknown
 
-horizon_label : Label _ at forecast B2
+horizon_label : Label _ at forecast $B$2
 horizon_label = "Horizon (years)"
 
 horizon : Value Number _ horizon_label right 2
