@@ -377,7 +377,10 @@ grand_total = money
   A field left out takes the app's default. The values are checked against ECMA-376 Part 1:
   each weight is one of ST_BorderStyle's and each alignment one of ST_HorizontalAlignment's or
   ST_VerticalAlignment's (§18.18), a font's name has at most 31 characters (§18.8.29), and an
-  indent goes only with a horizontal alignment of left or right (§18.8.1).
+  indent goes only with a horizontal alignment of left or right (§18.8.1). A font's size is from
+  1 to 409.55 points: the standard asks only for a positive size (§18.4.11), and [MS-OI29500]
+  gives the spreadsheet app's range (Part 1 §18.4.11, note c). The app keeps a size in
+  twentieths of a point (note b), so it may round one between them; `.yup` allows any.
 - **There is no built-in palette.** Colors are styles of type `Color` defined in the file. Sharing
   one palette between files waits for a way to import one file into another.
 - **Single quotes hold settings and double quotes hold data.** Sheet names, format codes and font
@@ -409,9 +412,8 @@ replaced by their values. Running the pipeline on it gives it back unchanged.
 
 ### Still open for 0.2
 
-- The largest font size and the deepest indent. The standard asks only for a positive size and a
-  whole indent (§18.4.11 and §18.8.1); 0.2 keeps to 1 to 409 points and an indent of at most
-  250, as conservative bounds, until a published source gives others.
+- The deepest indent. The standard asks only for a whole number (§18.8.1); 0.2 keeps to at most
+  250, as a conservative bound, until a published source gives another.
 - The other values the standard allows and `.yup` does not offer yet: more weights of line (such
   as `mediumDashed`), and the alignments `general`, `fill`, `centerContinuous` and `distributed`.
 - The syntax of an explicit lambda inside an expression.

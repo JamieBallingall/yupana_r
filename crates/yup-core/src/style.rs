@@ -103,10 +103,12 @@ const HORIZONTAL: &[(&str, &str)] = &[
 ];
 const VERTICAL: &[(&str, &str)] = &[("Top", "top"), ("Center", "center"), ("Bottom", "bottom")];
 
-/// The largest font size, in points, and the deepest indent, in steps of three spaces. The
-/// standard asks only for a positive size and a whole indent (ECMA-376 Part 1, §18.4.11 and
-/// §18.8.1), so these are conservative bounds, kept until a published source gives others.
-const MAX_POINTS: f64 = 409.0;
+/// The largest font size, in points. The standard asks only for a positive size (ECMA-376 Part
+/// 1, §18.4.11), and the spreadsheet app takes one from 1 to 409.55 ([MS-OI29500], Part 1
+/// §18.4.11, note c).
+const MAX_POINTS: f64 = 409.55;
+/// The deepest indent, in steps of three spaces. The standard asks only for a whole number
+/// (§18.8.1), so this is a conservative bound, kept until a published source gives another.
 const MAX_INDENT: i64 = 250;
 /// The longest a font's name can be, in characters (§18.8.29).
 const MAX_FONT_NAME: usize = 31;
@@ -768,7 +770,7 @@ mod tests {
                     .to_string(),
                 "2:45: error: `border_b` is a style of type Border, and a Color is needed here"
                     .to_string(),
-                "2:71: error: a font's size is from 1 to 409 points".to_string(),
+                "2:71: error: a font's size is from 1 to 409.55 points".to_string(),
                 "3:31: error: `Heavy` is not one of Thin, Medium, Thick, Double, Hair, Dotted, \
                  Dashed"
                     .to_string(),
@@ -786,6 +788,15 @@ mod tests {
             ),
             Err(vec![
                 "2:28: error: a font's name has at most 31 characters".to_string()
+            ])
+        );
+        let largest = evaluate("cell_a = { font = { size = 409.55 } }\n", "cell_a")
+            .expect("the largest size is allowed");
+        assert_eq!(largest.font.size, Some(409.55));
+        assert_eq!(
+            evaluate("cell_a = { font = { size = 409.6 } }\n", "cell_a"),
+            Err(vec![
+                "2:28: error: a font's size is from 1 to 409.55 points".to_string()
             ])
         );
         let centered = evaluate(
