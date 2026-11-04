@@ -43,6 +43,21 @@ fn every_example_builds_without_warnings() {
 }
 
 #[test]
+fn the_fully_elaborated_form_of_every_example_builds_the_same_workbook() {
+    for (name, source, inputs) in examples() {
+        let grounded = yup_core::show(&source, Step::Ground, &inputs)
+            .unwrap_or_else(|errors| panic!("{name}: {errors:?}"))
+            .text;
+        let built = |source: &str| {
+            yup_core::build(source, &inputs)
+                .unwrap_or_else(|errors| panic!("{name}: {errors:?}"))
+                .xlsx
+        };
+        assert!(built(&grounded) == built(&source), "{name}");
+    }
+}
+
+#[test]
 fn every_step_of_every_example_reads_back_to_itself() {
     for (name, source, inputs) in examples() {
         for step in Step::ALL.into_iter().filter(|&step| step <= Step::Check) {
