@@ -103,9 +103,13 @@ const HORIZONTAL: &[(&str, &str)] = &[
 ];
 const VERTICAL: &[(&str, &str)] = &[("Top", "top"), ("Center", "center"), ("Bottom", "bottom")];
 
-/// The most a font size can be, in points, and the deepest indent, in steps.
+/// The largest font size, in points, and the deepest indent, in steps of three spaces. The
+/// standard asks only for a positive size and a whole indent (ECMA-376 Part 1, §18.4.11 and
+/// §18.8.1), so these are conservative bounds, kept until a published source gives others.
 const MAX_POINTS: f64 = 409.0;
 const MAX_INDENT: i64 = 250;
+/// The longest a font's name can be, in characters (§18.8.29).
+const MAX_FONT_NAME: usize = 31;
 
 /// The fields of each type of style, and what each holds.
 fn fields(ty: StyleType) -> &'static [(&'static str, Kind)] {
@@ -323,6 +327,10 @@ impl<'a> Evaluator<'a> {
             (Kind::FontName, ExprKind::Text(name)) => {
                 if name.trim().is_empty() {
                     wrong("a font's name cannot be empty".to_string())
+                } else if name.chars().count() > MAX_FONT_NAME {
+                    wrong(format!(
+                        "a font's name has at most {MAX_FONT_NAME} characters"
+                    ))
                 } else {
                     return Some(Value::Text(name.clone()));
                 }
@@ -530,6 +538,21 @@ pub fn cell(value: &Value) -> CellStyle {
             },
         },
     }
+}
+
+/// Why a cell's style cannot be written as it is, if it cannot: an indent goes only with a
+/// horizontal alignment of left or right (ECMA-376 Part 1, §18.8.1). The standard also allows
+/// one with distributed alignment, which `.yup` does not offer.
+pub fn cell_problem(style: &CellStyle) -> Option<String> {
+    let align = &style.align;
+    if align.indent.is_some() && !matches!(align.horizontal, Some("left" | "right")) {
+        return Some(
+            "an indent goes with a horizontal alignment of Left or Right, and this style has \
+             neither"
+                .to_string(),
+        );
+    }
+    None
 }
 
 /// The fields of a cell's style other than the font's name and size, which are all a sheet's or
@@ -752,6 +775,31 @@ mod tests {
                 "4:10: error: a style is built on itself: cell_c -> cell_c".to_string(),
             ])
         );
+    }
+
+    #[test]
+    fn fonts_and_indents_are_kept_to_what_the_standard_allows() {
+        assert_eq!(
+            evaluate(
+                "cell_a = { font = { name = 'A font whose name runs past the limit' } }\n",
+                "cell_a"
+            ),
+            Err(vec![
+                "2:28: error: a font's name has at most 31 characters".to_string()
+            ])
+        );
+        let centered = evaluate(
+            "cell_a = { align = { horizontal = Center, indent = 1 } }\n",
+            "cell_a",
+        )
+        .expect("evaluates");
+        assert!(cell_problem(&centered).is_some());
+        let left = evaluate(
+            "cell_a = { align = { horizontal = Left, indent = 1 } }\n",
+            "cell_a",
+        )
+        .expect("evaluates");
+        assert_eq!(cell_problem(&left), None);
     }
 
     #[test]

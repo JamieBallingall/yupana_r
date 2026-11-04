@@ -257,7 +257,15 @@ pub fn resolve(program: &Program, inputs: &Inputs) -> Result<Model, Vec<Diagnost
         binding.style = match &signature_of(program, binding).style {
             Some(StyleName::Named(name)) => styles
                 .named(&name.name, StyleType::Cell, name.pos)
-                .map(|value| style::cell(&value)),
+                .map(|value| style::cell(&value))
+                .filter(|cell| match style::cell_problem(cell) {
+                    Some(problem) => {
+                        let message = format!("`{}`: {problem}", name.name);
+                        styles.errors.push(Diagnostic::error(name.pos, message));
+                        false
+                    }
+                    None => true,
+                }),
             _ => Some(CellStyle::default()),
         };
     }

@@ -184,7 +184,7 @@ fn root_relationships() -> String {
     )
 }
 
-/// The sheet the workbook opens on: the first that is not hidden.
+/// The sheet the workbook opens on, its active tab (§18.2.30): the first that is not hidden.
 fn active_sheet(workbook: &Workbook) -> usize {
     workbook
         .sheets
@@ -269,7 +269,7 @@ fn font_xml(font: &Font, default: &Font) -> String {
     x
 }
 
-/// A solid fill of one color.
+/// A solid fill of one color (§18.8.32).
 fn fill_xml(color: Rgb) -> String {
     format!(
         "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"{}\"/></patternFill></fill>",
@@ -277,7 +277,7 @@ fn fill_xml(color: Rgb) -> String {
     )
 }
 
-/// A border, its sides in the order the schema gives them.
+/// A border, its sides in the order the standard lists them (§18.8.4).
 fn border_xml(border: &Border) -> String {
     let mut x = String::from("<border>");
     for (name, edge) in [
@@ -305,7 +305,7 @@ fn border_xml(border: &Border) -> String {
     x
 }
 
-/// A cell's alignment, if it has one.
+/// A cell's alignment, if it has one (§18.8.1).
 fn alignment_xml(align: &Alignment) -> Option<String> {
     let mut attributes = String::new();
     if let Some(horizontal) = align.horizontal {
@@ -333,7 +333,8 @@ fn styles_xml(styles: &[CellStyle], default: &Font) -> String {
     let mut xfs = String::new();
     for style in styles {
         let font = position(&mut fonts, font_xml(&style.font, default));
-        // The first two fills are the ones the format reserves.
+        // The first two fills are none and gray125, as in the standard's own example of a
+        // styles part (Annex L.2.7).
         let fill = match style.fill {
             Some(color) => 2 + position(&mut fills, fill_xml(color)),
             None => 0,
@@ -485,7 +486,8 @@ fn metadata_xml() -> String {
 
 fn sheet_xml(sheet: &SheetCells, active: bool, strings: &SharedStrings) -> String {
     let mut x = format!("{DECLARATION}<worksheet xmlns=\"{MAIN}\" xmlns:r=\"{RELATIONSHIPS}\">");
-    // The sheet's properties come first in the worksheet, and its tab's color among them.
+    // The sheet's properties come first in the worksheet, and its tab's color among them
+    // (§18.3.1.82 and §18.3.1.93).
     if let Some(color) = sheet.color {
         x.push_str(&format!(
             "<sheetPr><tabColor rgb=\"{}\"/></sheetPr>",
