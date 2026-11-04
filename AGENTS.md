@@ -6,7 +6,7 @@ Instructions for coding agents working in this repository.
 
 [README.md](README.md) is the design record: what the project is, the scope of stage 1, what is
 decided, and what is still open. [docs/language.md](docs/language.md) describes the language as
-the code implements it. The code is a provisional version 0.1, built to try the design end to end;
+the code implements it. The code is a provisional version 0.2, built to try the design end to end;
 the syntax is not settled.
 
 Where the code and these documents disagree, fix whichever is wrong in the same commit. A

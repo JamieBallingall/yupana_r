@@ -96,7 +96,7 @@ HSTACK, VSTACK). Earlier versions are not supported.
   validation, comments, merged cells, links to other workbooks, what-if data tables, and circular
   references.
 - Overriding one cell inside a range. An exception is expressed as data instead:
-  `revenue = base + adjustments`, where `adjustments` is an input row.
+  `revenue = base + adjustments`, where `adjustments` is a row read from an input file.
 - A linter. Warning about a reference across sheets that does not go through a name is wanted
   later, but nothing is enforced.
 
@@ -146,14 +146,18 @@ per member of a set of unknown size (it becomes one two-dimensional range instea
 ## Built for 0.1
 
 Decided while building the first version, on 2026-10-14, to have something to try. Each is
-provisional, and names the open question it answers where there is one.
+provisional, and names the open question it answers where there is one. 0.2 replaced much of
+this: an entry it replaced says so, in italics, and the sections on 0.2 stand.
 
-- **The first line** is `yup 0.1`, and the extension stays `.yup` for now (question 11).
+- **The first line** is `yup 0.1`, and the extension stays `.yup` for now (question 11). *Replaced
+  in 0.2: the first line is `yup 0.2`.*
 - **Roles.** A binding is shown when its signature has a label, an input when the signature also
   says `Input`, and local otherwise. A signature without a label still has its size checked.
+  *Replaced in 0.2: every signature states its role.*
 - **Exporting** (question 13 and observation 4). Every shown binding and input becomes a defined
   name, and formulas refer to them by name. A local binding is written into each formula that
-  uses it; a LET would avoid repeating it, and is left for later.
+  uses it; a LET would avoid repeating it, and is left for later. *Replaced in 0.2 for locals,
+  which are LET variables; every `Formula` and `Value` is still a defined name.*
 - **Everything spills** (question 14). Every shown formula is a dynamic array formula, whatever its
   size; writing a formula into each cell of a range of fixed size is left for later.
 - **Recording a spill** (question 20). The formula sits in its anchor cell as an array formula
@@ -164,31 +168,38 @@ provisional, and names the open question it answers where there is one.
   offer to repair, calculated, and spilled as intended.
 - **Formats of spilled cells.** The cells a formula spills into are not in the file, so every row a
   styled range spills along carries the range's style. A range of unknown height is styled in its
-  anchor only.
+  anchor only. *Replaced in 0.2: see [Built for 0.2](#built-for-02).*
 - **Signatures keep their sizes.** When a signature's size agrees with the definition, the range
   takes the size as the signature writes it, so a fixed size named there (`[s, 1]`) carries into
-  the layout below it (`@ (s + 3, 4)`).
+  the layout below it (`@ (s + 3, 4)`). *0.2 keeps this, and writes the place as a move from
+  another binding.*
 - **Functions.** A definition with parameters, `discount rate years = …`, is a function. Its size
   is worked out at each call from the arguments' sizes, and it becomes a defined name holding a
-  LAMBDA, so the workbook can call it too.
+  LAMBDA, so the workbook can call it too. *0.2 keeps this, with the role `Lambda` and a type.*
 - **Recurrences.** A cycle broken by `lag 1 x from first` carries the balance `x` from one period
   to the next. Its size is found in two passes: first with the lagged balance taken as a single
   value, which stretches to fit, then again with the size that gives. The balance is written as a
   SCAN whose step has the rest of the cycle written in place, so the workbook holds no circular
-  reference; a row outside the cycle that it uses gives the SCAN its length.
+  reference; a row outside the cycle that it uses gives the SCAN its length. *0.2 keeps this,
+  writes `seed` for `from`, and lets the balance run down a column too.*
 - **`lag`** works along columns. `from` gives the first values of `lag 1` only (question 1).
+  *Replaced in 0.2: `lag` works across or down, and `seed` gives the first value.*
 - **Names** of bindings and sizes are lower case ASCII and follow the rules for defined names: not
   a cell (`tax2026`), not R1C1 (`r`, `c1`, `rc`), not a function or keyword (question 2).
 - **The default sheet** for items before any `sheet` statement is `Sheet1` (question 18).
+  *Replaced in 0.2: sheets are bindings, and there is no default sheet.*
 - **A possible `#SPILL!`** is a warning, and the workbook is still written (question 19).
 - **Pins** are written `@ (row, column)`, numbers as in the elaborated forms (question 17).
+  *Replaced in 0.2: a cell is written in A1, `at forecast B2`.*
 - **Layout.** Row 1 and column A are margins. Labels and headings go in column B, column C stays
-  empty, and position 0 of a range's columns is column D. Headings are bold.
+  empty, and position 0 of a range's columns is column D. Headings are bold. *Replaced in 0.2:
+  every binding says where it goes, and nothing is styled implicitly.*
 - **Built-in functions.** `min` and `max` work position by position, and `minimum` and `maximum`
   reduce, as in Haskell. Arguments that say how much come first (`lag 1 x`, `round 2 x`). Text is
   joined with `++`. Logical `&&`, `||` and `not` work position by position too.
 - **Inputs** are literals or lists of literals, written in blue, as financial models usually show
-  inputs, or tables read from CSV files (question 4).
+  inputs, or tables read from CSV files (question 4). *Replaced in 0.2: a `Value` holds one
+  literal or a CSV table, and is styled only as its signature says.*
 - **Tables.** `history = csv "history.csv"` reads a file beside the `.yup` file, which the command
   line passes to the core. Its first row names the columns; unquoted fields are typed, quoted
   ones are text; `column "units" history` picks a column. A table's size is counted when the
@@ -196,7 +207,7 @@ provisional, and names the open question it answers where there is one.
   has an unknown size: rows written as cells cannot grow in the workbook, so a table that grows
   there needs a reference that grows with it, which is left open.
 - **Number formats** are checked conservatively before they reach the workbook; literal text in a
-  format goes in double quotes.
+  format goes in double quotes. *0.2 puts the format code itself in single quotes.*
 - **The zip** stores its parts without compression and with a fixed timestamp, so the same file
   always gives the same bytes (questions 9 and 23).
 - **Unnamed unknown sizes** are called after the binding that introduced them, such as `year_n`.
@@ -270,9 +281,9 @@ or from where the line sits in the file.
 
 Each `Formula`, `Value` and `Label` says where it goes, in its signature: either at a cell, or
 beside another binding. The sheet a binding is on is the sheet of the binding its placements lead
-back to. 0.1 placed items in the order of the file; with that order gone, the reason
-[Options considered and set aside](#options-considered-and-set-aside) gives against relative
-placement no longer holds.
+back to. 0.1 placed items in the order of the file; with that order gone, the reason 0.1 gave
+against relative placement, recorded in
+[Options considered and set aside](#options-considered-and-set-aside), no longer holds.
 
 ```text
 horizon_label : Label label at forecast B2
@@ -446,9 +457,8 @@ is provisional. [docs/language.md](docs/language.md) describes 0.2 as it is buil
 - **Styles of spilled cells.** Where a formula's extent is known, the cells it spills into are
   written as empty cells with its style. Where it is not, the style goes on the whole row or
   column the range grows along, and the cells before the range on that row or column are
-  written with the default style. Past the end of
-  such a spill, the row or column keeps the style: a fill or a border runs on to the edge of the
-  sheet.
+  written with the default style. Past the end of such a spill, the row or column keeps the
+  style: a fill or a border runs on to the edge of the sheet.
 - **Empty columns.** A column that nothing is in, before the last column that something is in,
   is narrow, as a gap; a range of unknown width counts as being in every column from its first.
 - **Locals are LET variables** (question 13). A formula binds each local it uses, directly or
@@ -508,46 +518,50 @@ is refused: it is the off-by-one-period error that sizes alone would let through
 
 - Elementwise operations need equal sizes and equal spans.
 - A dimension of size 1 is stretched to match the other operand, as the app does. One value per
-  segment, stretched across the periods, is a column of size `s 1`, not a row of size `1 s`.
+  segment, stretched across the periods, is a column of size `[s, 1]`, not a row of size `[1, s]`.
 - Expressions over different size variables do not combine, except through a dimension of size 1.
 - A lookup's result has the size and span of its key, not of the table. That is how values move
   from an input table of size `m` onto a timeline of size `n`.
 
 ### Layout
 
-Spans are positions along a size variable. Layout decides where position 0 of each lands on a
-sheet. The label column, the gap between label and values, and the column where position 0 lands
-are constants of the layout, not sizes. A range's **anchor** is the top-left cell of its values,
-not its label, and its anchor column is the column of position 0 plus the start of its span.
+Spans are positions along a size variable. Layout decides where they land on a sheet. A range's
+**anchor** is the top-left cell of its values. Each `Formula`, `Value` and `Label` is placed at a
+cell, or beside another binding by moves that count from one of its sides (see
+[Layout](#layout) under 0.2). A label is a binding of its own, so there is no label column or
+gap built into the layout.
 
-By default, layout follows the order of the definitions: each range goes below the one before.
-More explicit placement, at the cost of a longer `.yup`, is possible: blocks on several sheets,
-blocks that run down rather than across, two-dimensional blocks, and ranges pinned to a cell. The
-syntax for these is open (question 16).
+When two ranges placed one from the other share a size variable along an axis, their spans say
+whether position *k* of one lines up with position *k* of the other. `growth`, with span
+`[1, n)`, placed one column in from the west side of `revenue`, with span `[0, n)`, lines up;
+the checker warns when a placement does not.
 
-An anchor may depend on `Fixed` sizes (row `4 + s`) but never on `Unknown` ones. Placing something
-below a range of `n` rows is refused.
+An anchor may depend on `Fixed` sizes (row `4 + s`) but never on `Unknown` ones. Counting from the
+south side of a range of `n` rows, to place something below it, is refused.
 
 ### Sheets
 
-A `sheet` statement opens a section, and everything after it belongs to that sheet until the next
-one. The order of the `sheet` statements is the order of the tabs.
+A sheet is a binding whose definition is a record of its settings, and the workbook lists the
+sheets in the order of their tabs:
 
 ```text
-sheet 'Inputs'
-...
-sheet 'Forecast'
-...
+workbook : Workbook
+workbook = { sheets = [inputs, forecast] }
+
+forecast : Sheet
+forecast = { name = 'Forecast' }
 ```
 
-Bindings are workbook-wide, so formulas name bindings, never sheets, and renaming a sheet is a
-one-line edit. The checker enforces the app's rules for sheet names: the maximum length, the
-forbidden characters, and uniqueness ignoring case.
+A binding's sheet is the sheet of the cell its placements lead back to. Bindings are
+workbook-wide, so formulas name bindings, never sheets, and renaming a sheet is a one-line edit.
+The checker enforces the app's rules for sheet names: the maximum length, the forbidden
+characters, and uniqueness ignoring case.
 
 ### Fill and spill
 
 A range of `Unknown` size must spill: it is one dynamic array formula at its anchor. Whether a range
-of `Fixed` size spills or is filled with one formula per cell is open (question 14).
+of `Fixed` size spills or is filled with one formula per cell is open (question 14). *0.1 and 0.2:
+everything spills.*
 
 ### Recurrences
 
@@ -555,7 +569,7 @@ A balance carried from one period to the next is natural in a hand-built workboo
 under spill. Because horizons resize, it has to work under spill. In illustrative syntax:
 
 ```text
-opening = lag 1 closing from principal
+opening = lag 1 closing seed principal
 payment = min scheduled opening
 closing = opening - payment
 ```
@@ -578,12 +592,14 @@ That rewrite is a compiler transformation (question 15). *To verify:* SCAN's acc
 single value, so two or more coupled balances (a revolving facility and a cash balance, say) cannot
 share one SCAN. That case would need REDUCE with stacking.
 
-*Built for 0.1:* a cycle is allowed when `lag 1 x from first` breaks it, and has one balance. The
-balance is written as one SCAN over the periods, whose step works one period out with the other
-members of the cycle written in place; the other members are ordinary formulas that use the
-balance. In [the loan example](examples/loan.yup) the closing balance is
-`SCAN(amount,SEQUENCE(1,COLUMNS(scheduled)),LAMBDA(_balance,_period,_balance-…))`, and the
-spreadsheet app works it out as intended. Coupled balances are refused.
+*Built for 0.1, and kept in 0.2:* a cycle is allowed when `lag 1 x seed first` breaks it, and
+has one balance. The balance is written as one SCAN over the positions, whose step works one
+position out with the other members of the cycle written in place; the other members are
+ordinary formulas that use the balance. In [the loan example](examples/loan.yup) the closing
+balance is `SCAN(amount,SEQUENCE(1,COLUMNS(scheduled)),LAMBDA(_value,_position,_value-…))`, and
+the spreadsheet app works it out as intended. In 0.2 a balance may also run down a column,
+counted with `ROWS` rather than `COLUMNS`, as in [the stock example](examples/stock.yup).
+Coupled balances are refused.
 
 ### Elementwise or aggregate
 
@@ -595,7 +611,8 @@ aggregating.
 ### Names in written formulas
 
 Exported bindings become defined names. Not decided: whether formulas in the workbook refer to
-bindings by name or by A1 reference (question 13). Under spill, names read naturally.
+bindings by name or by A1 reference (question 13). Under spill, names read naturally. *0.1 and
+0.2: by name.*
 
 ### Two kinds of failure
 
@@ -603,25 +620,30 @@ bindings by name or by A1 reference (question 13). Under spill, names read natur
   writer cannot write validly.
 - **A possible `#SPILL!`.** The file is valid, but a spill may collide with something when the
   workbook calculates. The checker reports it; whether as an error or a warning is open
-  (question 19).
+  (question 19). *0.1 and 0.2: a warning.*
 
 ## The pipeline
 
 Each step takes one form of the model and produces the next.
 
 1. **Parse** produces a syntax tree. It decides structure only. Errors: lexical and syntax.
-2. **Resolve** produces the resolved model: what each name refers to, and the dependency graph.
-   Errors: an unknown or duplicate name, a circular reference.
-3. **Infer** produces the typed model: every expression's size and span, in size variables.
-   Errors: a size or span mismatch, the wrong number of arguments, an aggregate where an
-   elementwise function is needed.
-4. **Place** produces the placed model: each block's sheet, every anchor and label cell, and the
-   gaps. Anchors may involve `Fixed` sizes. Errors: an anchor that depends on an `Unknown` size.
+2. **Resolve** produces the resolved model: what each name refers to, the formulas' dependency
+   graph, the layout's graph, and each binding's sheet and style. Errors: an unknown or duplicate
+   name, a signature without its definition, a circular reference, placements in a circle, a
+   style that does not fit its type.
+3. **Infer** produces the typed model: every expression's type, size and span, in size
+   variables. Errors: a size or span mismatch, arithmetic on text, the wrong number of
+   arguments, an aggregate where an elementwise function is needed.
+4. **Place** produces the placed model: every anchor, worked out from the placements. Anchors may
+   involve `Fixed` sizes. Errors: a move that counts from the far side of a range of `Unknown`
+   extent, or a binding of `Unknown` extent placed left of or above another. A placement that
+   does not line up is a warning.
 5. **Ground** produces the grounded model by substituting the `Fixed` sizes. Every anchor is now a
    constant, and every extent a size expression in `Unknown` variables only. No errors: this is
    pure substitution.
-6. **Check** looks for overlaps and possible `#SPILL!`, for every value of the `Unknown`
-   variables, and changes nothing. Errors: a collision (refused); a possible spill (reported).
+6. **Check** looks for overlaps, ranges that run off the sheet, and possible `#SPILL!`, for every
+   value of the `Unknown` variables, and changes nothing. Errors: a collision or a range off the
+   sheet (refused); a possible spill (reported).
 7. **Lower** produces cell contents. Range by range becomes cell by cell, and it writes the
    formula text: function names, `_xlfn.` prefixes, parentheses and A1 references. A failure here
    is a bug.
@@ -632,63 +654,82 @@ Steps 1 to 6 are the checker; steps 7 and 8 are the writer.
 **Spans are inferred at Infer,** with sizes, from the expressions alone and before any sheet or
 coordinate exists. Place is the first step to use them.
 
-**Coordinates are numbers until Lower.** Through steps 3 to 6 a cell is a pair of numbers
+**Coordinates are numbers inside the tool.** From Place on, a cell is a pair of numbers
 `(row, column)`, counted from 1 as the app counts (A1 is `(1, 1)`). Before Ground an anchor can be
-`(4 + s, 4)`, which has no A1 form. Lower is the only step that writes A1.
+`(4 + s, 4)`, which has no A1 form, so Place prints each placement as it was written. From Ground
+on every anchor is a constant, printed in A1 as `at forecast D4`, and Lower writes A1 references
+into the formulas.
 
 **Range by range becomes cell by cell at Lower.** A range that spills becomes one formula in its
 anchor cell; the cells it spills into are left empty in the file, for the app to fill when it
-calculates. A range that is filled (only possible at a `Fixed` size) becomes one formula per cell,
-with relative references. Every label becomes a text cell.
+calculates. A range that is filled (only possible at a `Fixed` size, and not built) would become
+one formula per cell, with relative references. Every label becomes a text cell.
 
-**Every step up to Check can print a valid `.yup`.** After Parse that is a formatter; after Resolve
-the definitions are regenerated; Infer, Place and Ground add sizes and spans, anchors, and
-substituted values; Check adds its findings as comments. After Lower the content is cell-level
-formula text and no longer `.yup`. Two requirements follow:
+**Every step up to Check can print a valid `.yup`.** After Parse and Resolve that is a formatter;
+Infer adds each binding's type, size and span; Place prints as Infer does; Ground puts every
+binding at a cell and replaces each `Fixed` size by its value; Check adds its warnings as
+comments. After Lower the content is cell-level formula text and no longer `.yup`. Two
+requirements follow:
 
-- The language has syntax for everything the steps add: size variables, spans and numeric anchors.
+- The language has syntax for everything the steps add: sizes (`[1, n]`), spans
+  (`start [0, 1]`) and cells (`at forecast D4`).
 - Running the pipeline on an elaborated file changes nothing: elaborating twice gives the same
   file as elaborating once. That is a property the tests check.
 
 ## A worked example
 
-Illustrative syntax only. Labels are in column B, column C is a gap, and position 0 of the period
-timeline lands in column D.
+In 0.2, with the workbook, the sheet and the two styles left out. Each label is a binding, placed
+at a cell or below another label, and each range two columns to the right of its label.
 
 ```text
-sheet 'Forecast'
-
 n : Size Unknown
 
-period : 1 n 'Period'
-period = 1 .. forecast_horizon               // introduces n
+horizon_label : Label _ at forecast B2
+horizon_label = "Horizon (years)"
 
-revenue : 'Revenue'
-revenue = <lookup by period>                 // size 1 n, span [0, n)
+horizon : Value Number _ horizon_label right 2
+horizon = 5
 
-growth : 'Revenue growth'
-growth = tail revenue / lag 1 revenue        // size 1 (n - 1), span [1, n)
+year_label : Label _ horizon_label down 2
+year_label = "Year"
+
+year : Formula Number _ [1, n] year_label right 2
+year = 1 .. horizon                          // n is decided in the workbook
+
+revenue_label : Label _ year_label down
+revenue_label = "Revenue"
+
+revenue : Formula Number money year down
+revenue = 1000 * 1.1 ^ year                  // size [1, n], span [0, n)
+
+growth_label : Label _ revenue_label down
+growth_label = "Revenue growth"
+
+growth : Formula Number percent revenue down 1 right 1 from west
+growth = tail revenue / lag 1 revenue - 1    // size [1, n - 1], span [1, n)
 ```
 
-After Ground (numeric anchors, `Unknown` extents):
+After Ground, every binding is at a cell, and each extent is in `Unknown` variables only:
 
 ```text
-period   [1, n]       @ (2, 4)    label @ (2, 2)
-revenue  [1, n]       @ (3, 4)    label @ (3, 2)
-growth   [1, n - 1]   @ (4, 5)    label @ (4, 2)
+year    : Formula Number _ [1, n] at forecast D4
+revenue : Formula Number money [1, n] at forecast D5
+growth  : Formula Number percent [1, n - 1] start [0, 1] at forecast E6
 ```
 
 After Lower, on the sheet:
 
 ```text
-     B                C    D          E          F    …
-2    Period                =SEQUENCE(1, forecast_horizon)   (spills)
-3    Revenue               =…                               (spills)
-4    Revenue growth                   =DROP(revenue,,1)/DROP(revenue,,-1)   (spills)
+     B                 C    D                       E                                   …
+2    Horizon (years)        5
+4    Year                   =SEQUENCE(1,horizon)                                         (spills)
+5    Revenue                =1000*1.1^year                                               (spills)
+6    Revenue growth                                 =DROP(revenue,,1)/DROP(revenue,,-1)-1  (spills)
 ```
 
-D4 is empty by construction, and all three ranges end in the same column, D + n − 1, because all
-three spans end at n.
+D6 is empty by construction, and all three ranges end in the same column, D + n − 1, because all
+three spans end at n. The file writes the newer functions with their `_xlfn.` prefix, left out
+here.
 
 ## Core syntax
 
@@ -698,7 +739,9 @@ three spans end at n.
   same mistake.
 - **Option S3: like Haskell or ML.** `exp x`, `if a then b else c`, `let … in …`, `\x y -> …` for
   a LAMBDA, and `discount r t = 1 / (1 + r) ^ t` as a named LAMBDA. It makes clear that `.yup` is
-  a language of its own that is compiled to the app's formulas. **Decided on 2026-11-03.**
+  a language of its own that is compiled to the app's formulas. **Decided on 2026-11-03.** *0.2
+  has neither `let … in …` nor `\x y -> …` yet: a `Local` binding does the work of a let, and
+  the syntax of a lambda inside an expression is still open.*
 
 **Why S3.** A `.yup` file is written from scratch, chiefly by an LLM. Converting a workbook from
 xlsx happens outside this repository, so familiarity with the app's formulas counts for less than
@@ -710,7 +753,7 @@ call has no argument list and no commas, and `if … then … else` and `let …
 or a new line rather than at a counted `)`. Nested calls still need parentheses
 (`round 2 (max a b)`). The habits S3 cannot prevent are caught instead: a call written as
 `f(a, b)`, a function name in upper case and an A1 reference are refused, with their line and
-column. An error that also says what to write instead is still to do.
+column and, since 0.2, what to write instead.
 
 Under S3 these need settling:
 
@@ -723,27 +766,30 @@ Under S3 these need settling:
   LAMBDA. *0.2: every call is saturated, for now.*
 - **Operators.** `=` binds, so equality needs another spelling (`==`, with `/=` or `!=`).
   Concatenation needs a spelling. Precedence is `.yup`'s own: the writer adds parentheses so that
-  the app's quirks cannot change the meaning (`-2^2` is 4 in the app).
+  the app's quirks cannot change the meaning (`-2^2` is 4 in the app). *0.1 and 0.2: `==` and
+  `/=`, and `++` joins text; `-2 ^ 2` is -4.*
 - **Function names.** `.yup`'s names (lower case) map to the app's through a table, which also
   records each function's arity, optional arguments, whether it is elementwise or aggregating, and
   its encoding in the file (the `_xlfn.` prefix of the newer functions). That table is stage 1's
   function library.
 
-Principles for easy lexing, proposed:
+Principles for easy lexing, which 0.1 and 0.2 follow:
 
 - One statement per line. A newline inside brackets is not an end of statement (Python's rule),
   which a lexer handles with a bracket counter. No offside rule.
 - Case carries meaning: bindings, functions and local variables are lower case
-  (`forecast_horizon`); words at the type level start upper case (`Input`, `Size`, `Fixed`), as in
+  (`forecast_horizon`); words at the type level start upper case (`Formula`, `Size`, `Fixed`), as in
   Haskell. A binding may not share a name with a function. Names that differ only in case are an
   error, since defined names in the app ignore case. *0.2: record fields are lower case, and
   constructors, `True` and `False` among them, upper case.*
 - Comments start with `//`, which means nothing in the app's formulas. `--` is Haskell's, but in
   the app it is double negation, used to turn logicals into numbers; `#` is the app's spill
   operator (`A1#`) and starts its error values (`#N/A`).
-- Labels and sheet names in single quotes, as the app quotes sheet names; a quote inside is
-  doubled (`'Prior year''s revenue'`). String values in double quotes, with defined escapes.
-  Numbers in JSON's grammar, as in `.yup` 0.0.2.
+- Settings in single quotes, as the app quotes sheet names: sheet names, format codes and font
+  names. A quote inside is doubled (`'Prior year''s revenue'`). Data in double quotes, with
+  defined escapes: the text of a label or a value, and strings in formulas. *0.1 put labels in
+  single quotes; 0.2 moved them to double quotes, as data.* Numbers in JSON's grammar, as in
+  `.yup` 0.0.2.
 
 ## Options considered and set aside
 
@@ -753,9 +799,11 @@ Principles for easy lexing, proposed:
 - **Extent per range** (fill with an explicit extent, spill with the extent inferred, the row
   model, or a choice per range). Replaced by size variables, which infer extents and make the
   choice between fill and spill follow from the size.
-- **Placement by absolute cell, by relative position (`Below foo`), or by order.** Order is the
-  default; pinning a cell is kept for the explicit end of the layout. Relative placement between
-  single ranges restates the order and drifts from it.
+- **Placement by the order of the file.** 0.1 put each range below the one before, and pinned a
+  cell where that was not enough. Relative placement was set aside then, because between single
+  ranges it restated the order and drifted from it. 0.2 sets the order aside instead, so that an
+  LLM never has to work out where a range goes from where its line sits in the file: every
+  binding is placed at a cell or beside another.
 - **Named axes** (a range indexed by `period` rather than sized by `n`). Size variables describe
   the physical rows and columns, which is what layout needs; spans recover the alignment that axes
   would have given.
@@ -766,56 +814,66 @@ Where 0.1 or 0.2 gives an answer, it follows in italics; [Built for 0.1](#built-
 [Decided for 0.2](#decided-for-02) have the reasons.
 
 1. **The lag operator:** the seed for a lag of more than one, and the direction for a
-   two-dimensional range. *0.1: along columns; `from` with `lag 1` only.*
-2. **Name rules:** are sheet-scoped names ever needed? *0.1: every binding follows the rules for
-   defined names, so that exporting one never forces a rename.*
+   two-dimensional range. *0.1: along columns; `from` with `lag 1` only. 0.2: `seed` with `lag 1`
+   only, along a range's one dimension, or `across` or `down` where written.*
+2. **Name rules:** are sheet-scoped names ever needed? *0.1 and 0.2: every binding follows the
+   rules for defined names, so that exporting one never forces a rename.*
 3. **An escape hatch for raw formula text:** allowed, and if so how marked?
 4. **Input files:** the CSV dialect and the JSON shape, how cells are typed (number, text, logical,
    blank), how a `.yup` binds an input to a range, and how an input table declares its size
-   variable. *0.1: CSV in RFC 4180's dialect, `csv "file.csv"` in an input's definition, and a
-   size counted when the workbook is written. JSON is not built, and neither is a table that grows
-   in the workbook.*
+   variable. *0.1 and 0.2: CSV in RFC 4180's dialect, `csv "file.csv"` in an input's (in 0.2, a
+   `Value`'s) definition, and a size counted when the workbook is written. JSON is not built, and
+   neither is a table that grows in the workbook.*
 5. **Dates:** a literal syntax, written as serial numbers in the 1900 date system.
 6. **Logicals and errors:** whether error literals exist, and how `and`, `or` and `not` are
-   written. *0.1: `true` and `false`, and `&&`, `||` and `not`. 0.2: `True` and `False`.*
+   written. *0.1: `true` and `false`, and `&&`, `||` and `not`. 0.2: `True` and `False`, and `na`
+   for `#N/A`; no other error literals.*
 7. **Formatting syntax:** inline on each range, named styles applied to ranges, or both, and the
    defaults. *0.1: inline, `Format "…"`, `Bold` and `Italic` in the signature. 0.2: named styles
    only, as records, with the app's defaults for anything a style leaves out.*
 8. **Validity without the app:** schema validation in the tests and reading by independent
    readers. Opening files in the spreadsheet app itself is a check made outside this repository.
    *0.1: the tests check that every part is well formed and listed, and that the zip reads back.*
-9. **Dependencies:** `wasm-bindgen` for the web, and whatever the MCP server needs. *0.1: none; the
-   zip is stored, with its own CRC-32.*
+9. **Dependencies:** `wasm-bindgen` for the web, and whatever the MCP server needs. *0.1 and 0.2:
+   none; the zip is stored, with its own CRC-32.*
 10. **The MCP server's tools:** check a file, print any step's `.yup`, write the xlsx.
 11. **The file:** keep the `.yup` extension? Either way, the first line identifies the version, so
-    each reader refuses the other format's files. *0.1: `.yup`, and the first line is `yup 0.1`.*
+    each reader refuses the other format's files. *0.1: `.yup`, and the first line is `yup 0.1`.
+    0.2: `.yup`, and `yup 0.2`; a reader of 0.2 refuses 0.1.*
 12. **Names:** of the project and its crates.
 13. **Exporting bindings:** whether a shown binding can stay unexported, and whether a local one
     becomes a LET variable rather than being repeated. *0.1: every shown binding is a defined
     name, formulas use those names, and a local binding is written where it is used. 0.2: a
     local is a LET variable in each formula that uses it.*
 14. **Fixed sizes:** does a range of `Fixed` size spill, or is it filled with one formula per cell?
-    *0.1: everything spills.*
+    *0.1 and 0.2: everything spills.*
 15. **Recurrences under spill:** the rewrite into SCAN or REDUCE, and what to do with coupled
-    balances. *0.1: one balance per cycle, written as a SCAN; coupled balances are refused, and
-    so is anything in the cycle that does not work position by position.*
+    balances. *0.1 and 0.2: one balance per cycle, written as a SCAN; coupled balances are
+    refused, and so is anything in the cycle that does not work position by position. In 0.2 the
+    balance may run down a column.*
 16. **Signature and layout syntax:** the order and form of size, span, label, anchor and
     attributes in a signature; how blocks, orientation (across or down), two-dimensional blocks
     and pinned cells are written; and how an elaborated file writes spans and numeric anchors.
-    *0.1: see [docs/language.md](docs/language.md). 0.2: a signature starts with its role, type,
-    style and label, in that order; the order of the rest is open.*
+    *0.2: role, type, style, size, start and place, in that order, with no label; a place is a
+    cell, `at forecast B2`, or moves from another binding; a range made with `..` is a row, and
+    `transpose` makes it a column; the elaborated form writes `[1, n]`, `start [0, 1]` and
+    `at forecast D4`.*
 17. **Pinned cells in the surface:** written in A1, as the author sees the workbook, or as numbers
-    like every elaborated form? *0.1: numbers.*
+    like every elaborated form? *0.1: numbers. 0.2: A1, in the surface and the elaborated form
+    alike.*
 18. **A file with no `sheet` statement:** a default sheet, or an error? *0.1: a sheet called
-    `Sheet1`.*
-19. **A possible `#SPILL!`:** an error or a warning? *0.1: a warning.*
-20. **Recording a spill of unknown extent:** *0.1: the anchor alone as the formula's range, with
-    the dynamic array metadata, and no cached values. The spreadsheet app opens and spills it.*
+    `Sheet1`. 0.2: there is no default; every file has one `Workbook`, which lists at least one
+    sheet.*
+19. **A possible `#SPILL!`:** an error or a warning? *0.1 and 0.2: a warning.*
+20. **Recording a spill of unknown extent:** *0.1 and 0.2: the anchor alone as the formula's
+    range, with the dynamic array metadata, and no cached values. The spreadsheet app opens and
+    spills it.*
 21. **Time aggregation:** rolling monthly ranges up to annual ones (`sum revenue by year`), which
     maps one size variable onto another.
-22. **The function library:** which of the app's functions stage 1 supports. *0.1: the eighteen in
-    [docs/language.md](docs/language.md).*
-23. **Deterministic output:** does the same input always give byte-identical xlsx? *0.1: yes.*
+22. **The function library:** which of the app's functions stage 1 supports. *0.1: eighteen. 0.2:
+    the twenty-two in [docs/language.md](docs/language.md).*
+23. **Deterministic output:** does the same input always give byte-identical xlsx? *0.1 and 0.2:
+    yes.*
 
 ## References
 
