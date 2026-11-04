@@ -5,8 +5,9 @@ decided. There is an existing **yupana** repo which this will eventually replace
 
 > **Seed capsule,** drafted 2026-10-14. This is a design record, not documentation of code. A
 > first version of the whole pipeline, `.yup` 0.1, was built on 2026-10-14 to try the design end to
-> end. Its syntax is provisional: [docs/language.md](docs/language.md) describes it, and
-> [Built for 0.1](#built-for-01) lists what was decided on the way.
+> end, and 0.2, which settles much of its syntax, on 2026-11-03. The syntax is still provisional:
+> [docs/language.md](docs/language.md) describes it, and [Built for 0.1](#built-for-01) and
+> [Built for 0.2](#built-for-02) list what was decided on the way.
 
 ## What this is
 
@@ -18,8 +19,9 @@ tool runs natively as a command and in the browser as WebAssembly.
 
 1. **A concise authoring surface.** The logic of a whole workbook fits in one LLM context window.
    Bulk numbers live in input files beside the `.yup`, so the `.yup` holds structure, logic and
-   formatting, and little numerical noise. The author never writes a coordinate or a size unless
-   they want to: the tool works out every range's size and lays the workbook out.
+   formatting, and little numerical noise. The author never writes a size unless they want to,
+   and places each range beside another rather than at a coordinate: the tool works out every
+   range's size and every cell.
 2. **Files that open cleanly.** Every spreadsheet file the tool writes opens without the
    spreadsheet app warning that it is corrupt or offering to repair it. Any such warning is a
    show-stopping bug.
@@ -50,11 +52,12 @@ start from.
 
 ## Stage 1: scope
 
-Stage 1 is the language and the writer, with no evaluation. It targets **financial models**: ranges
-of inputs and calculations laid out over time periods, segments, scenarios and the like, with
-input sheets and summaries. The default layout is the common one (a label at the left and one row
-per line item, spilling right across the periods), but other layouts are possible at the cost of a
-more explicit `.yup`.
+Stage 1 is the language and the writer, with no evaluation. Its goal is **a concise description
+of a workbook's formula logic and styling.** Financial models were its first target and remain its
+first examples: ranges of inputs and calculations laid out over periods, segments and scenarios,
+with input sheets and summaries. Nothing in the language depends on them. A range runs across or
+down, `lag`, `tail` and `init` work along either, and any layout is described by placing each
+range at a cell or beside another.
 
 The target is the spreadsheet app's current versions: dynamic arrays, LET, LAMBDA and its helper
 functions (SCAN, REDUCE, MAP and the like), and the newer array functions (SEQUENCE, DROP, TAKE,
@@ -75,9 +78,10 @@ HSTACK, VSTACK). Earlier versions are not supported.
   refer to it. A binding may leave no trace in the workbook, or be exported as a workbook-scoped
   defined name: a named range, or a LAMBDA (a defined name whose value is the LAMBDA). See open
   question 13.
-- Literal values in formulas (12 months in a year), and input values read from CSV or JSON files.
-- Formatting: number formats (always a custom format string), column widths, bold, italic, font
-  color, fill color, and basic cell borders.
+- Literal values in formulas (12 months in a year), and values read from CSV or JSON files.
+- Formatting, through named styles: number formats (always a custom format string), fonts (name,
+  size, bold, italic and color), fills, borders and their colors, alignment and wrapping; tab
+  colors and hidden sheets; and column widths, which the tool sets.
 - A command-line tool, a WebAssembly build, a website (upload a `.yup` and its inputs, download an
   xlsx), and an MCP server (check a `.yup`; later, evaluate it).
 
@@ -104,11 +108,12 @@ per member of a set of unknown size (it becomes one two-dimensional range instea
 ## Build order
 
 1. **Syntax.** Settle the core syntax and the open parts of the range model; write the
-   specification. A provisional 0.1 is built, to try the design; the steps below were begun for
-   it, and settling the syntax may change them.
-2. Lexer, parser, checker. *Built for 0.1.*
-3. The xlsx writer. *Built for 0.1.*
-4. Formatting. *Begun: number formats, bold, italic, blue inputs and column widths.*
+   specification. A provisional 0.1 was built to try the design, and 0.2 settles much of the
+   syntax: see [Decided for 0.2](#decided-for-02).
+2. Lexer, parser, checker. *Built for 0.1, and rebuilt for 0.2.*
+3. The xlsx writer. *Built for 0.1, and extended for 0.2.*
+4. Formatting. *Built for 0.2: number formats, fonts, fills, borders, alignment, tab colors,
+   hidden sheets and column widths.*
 5. The website and the MCP server.
 
 ## Decided so far
@@ -122,7 +127,8 @@ per member of a set of unknown size (it becomes one two-dimensional range instea
 - `.yup` is a language of its own, with its own lexer and parser, and is designed to be easy to
   lex.
 - The core syntax is S3, like Haskell or ML, decided on 2026-11-03. See [Core syntax](#core-syntax).
-- Formulas are given range by range. The tool infers every range's size and does the layout.
+- Formulas are given range by range. The tool infers every range's size, and works out every
+  cell from the placements.
 - Each binding is a pair of lines: a signature (`name : …`), which carries its role, type, style
   and place, and a definition (`name = …`).
 - Sizes are tracked through the model with size variables, and positions along them with spans.
@@ -135,7 +141,7 @@ per member of a set of unknown size (it becomes one two-dimensional range instea
 - Binding names are ASCII. Text and sheet names can be any Unicode.
 - Comments start with `//`.
 - Operators are preferred to function calls where they read well, such as `1 .. n` for a sequence.
-- Inputs come both inline, as literals, and from CSV or JSON files.
+- Values come both inline, as literals, and from CSV or JSON files.
 
 ## Built for 0.1
 
@@ -179,8 +185,8 @@ provisional, and names the open question it answers where there is one.
 - **Layout.** Row 1 and column A are margins. Labels and headings go in column B, column C stays
   empty, and position 0 of a range's columns is column D. Headings are bold.
 - **Built-in functions.** `min` and `max` work position by position, and `minimum` and `maximum`
-  reduce, as in Haskell. Arguments that say how much come first (`lag 1 x`, `round 2 x`). Text is joined
-  with `++`. Logical `&&`, `||` and `not` work position by position too.
+  reduce, as in Haskell. Arguments that say how much come first (`lag 1 x`, `round 2 x`). Text is
+  joined with `++`. Logical `&&`, `||` and `not` work position by position too.
 - **Inputs** are literals or lists of literals, written in blue, as financial models usually show
   inputs, or tables read from CSV files (question 4).
 - **Tables.** `history = csv "history.csv"` reads a file beside the `.yup` file, which the command
