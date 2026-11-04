@@ -20,8 +20,9 @@ pub const VERSION: &str = "0.2";
 
 /// Names that cannot be used for bindings, size variables or functions.
 pub const KEYWORDS: &[&str] = &[
-    "across", "at", "down", "east", "else", "false", "from", "if", "left", "north", "right",
-    "seed", "size", "south", "start", "style", "then", "true", "up", "west", "yup",
+    "across", "at", "down", "east", "else", "false", "from", "height", "if", "left", "north",
+    "right", "seed", "size", "south", "start", "style", "then", "true", "up", "west", "width",
+    "yup",
 ];
 
 /// Parses a whole file.
@@ -349,8 +350,8 @@ impl Parser {
     }
 
     /// The parts of a signature after its role and type, each led by a keyword, in any order:
-    /// `style money`, `size [1, n]`, `start [0, 1]`, and a place, `at forecast $B$2` or a binding
-    /// and its moves. Each part says what it is, so the order carries no meaning, and the printer
+    /// `style money`, `width 64`, `height 28`, `size [1, n]`, `start [0, 1]`, and a place,
+    /// `at forecast $B$2` or a binding and its moves. Each part says what it is, so the order carries no meaning, and the printer
     /// writes them back in one order.
     fn signature_parts(&mut self, sig: &mut Signature) -> Parsed<()> {
         let role = sig.role;
@@ -379,6 +380,8 @@ impl Parser {
             };
             let (what, allowed) = match word.as_str() {
                 "style" => ("style", role.is_placed()),
+                "width" => ("width", role.is_placed()),
+                "height" => ("height", role.is_placed()),
                 "size" => ("size", has_cells),
                 "start" => ("start", has_cells),
                 "at" => ("place", role.is_placed()),
@@ -401,6 +404,8 @@ impl Parser {
             }
             let given = match what {
                 "style" => sig.style.is_some(),
+                "width" => sig.width.is_some(),
+                "height" => sig.height.is_some(),
                 "size" => sig.shape.is_some(),
                 "start" => sig.start.is_some(),
                 _ => sig.place.is_some(),
@@ -416,6 +421,14 @@ impl Parser {
                     self.advance();
                     sig.style = Some(self.ident()?);
                 }
+                "width" => {
+                    self.advance();
+                    sig.width = Some((self.pixels(cells::width_problem)?, pos));
+                }
+                "height" => {
+                    self.advance();
+                    sig.height = Some((self.pixels(cells::height_problem)?, pos));
+                }
                 "size" => {
                     self.advance();
                     sig.shape = Some(self.shape()?);
@@ -427,6 +440,16 @@ impl Parser {
                 _ => sig.place = Some(self.placement()?),
             }
         }
+    }
+
+    /// A width or a height: a whole number of pixels, within what `problem` allows.
+    fn pixels(&mut self, problem: fn(i64) -> Option<String>) -> Parsed<u32> {
+        let pos = self.pos();
+        let pixels = self.integer("a whole number of pixels")?;
+        if let Some(problem) = problem(pixels) {
+            return Err(Diagnostic::error(pos, problem));
+        }
+        Ok(u32::try_from(pixels).expect("a width or height in range fits in 32 bits"))
     }
 
     /// The type after a role: optional for what holds cells, and required for a lambda and a
@@ -1151,6 +1174,25 @@ mod tests {
                 "5:29: error: this signature already gives a style",
                 "6:11: error: a Local signature has no place",
                 "7:29: error: a Lambda signature has no style",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_width_and_a_height_are_whole_pixels_within_the_apps_limits() {
+        let sig = signature("x : Label height 28 width 160 at s B2");
+        assert_eq!(sig.width.map(|(width, _)| width), Some(160));
+        assert_eq!(sig.height.map(|(height, _)| height), Some(28));
+        assert_eq!(
+            errors(
+                "yup 0.2\na : Label width 0 at s B2\nb : Label height 546 at s B2\nc : Label width \
+                 6.5 at s B2\nd : Local width 4\n"
+            ),
+            [
+                "2:17: error: a column is from 1 to 1785 pixels wide",
+                "3:18: error: a row is from 1 to 545 pixels high",
+                "4:17: error: expected a whole number of pixels, found the number `6.5`",
+                "5:11: error: a Local signature has no width",
             ]
         );
     }

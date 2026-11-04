@@ -3,8 +3,11 @@ yup 0.2
 // A revenue and profit forecast for an invented company. The horizon is a value: change it in
 // the workbook, and every row of the forecast resizes to match.
 
+// Every column is 72 pixels wide unless something says otherwise, and the first label on each
+// sheet makes its column wide enough for the labels below it.
+
 workbook : Workbook
-workbook = { sheets = [inputs, forecast] }
+workbook = { sheets = [inputs, forecast], column_width = 72 }
 
 inputs : Sheet
 inputs = { name = 'Inputs' }
@@ -46,7 +49,7 @@ total = money { font = { bold = True } }
 
 // Inputs
 
-horizon_label : Label style label at inputs $B$2
+horizon_label : Label style label width 180 at inputs $B$2
 horizon_label = "Forecast horizon (years)"
 
 horizon : Value Number style input horizon_label right 2
@@ -83,7 +86,7 @@ discount rate years = 1 / (1 + rate) ^ years
 
 // Forecast
 
-revenue_heading : Label style heading at forecast $B$2
+revenue_heading : Label style heading width 180 at forecast $B$2
 revenue_heading = "Revenue"
 
 year_label : Label style label revenue_heading down

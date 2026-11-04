@@ -343,6 +343,12 @@ pub struct Signature {
     pub ty: Option<(Type, Pos)>,
     /// The style named by `style money`; without one, the cells take the default.
     pub style: Option<Ident>,
+    /// `width 64`: the width of every column the binding spans, in pixels, and where it was
+    /// written.
+    pub width: Option<(u32, Pos)>,
+    /// `height 28`: the height of every row the binding spans, in pixels, and where it was
+    /// written.
+    pub height: Option<(u32, Pos)>,
     pub shape: Option<ShapeSyntax>,
     pub start: Option<Offset>,
     pub place: Option<Placement>,
@@ -357,6 +363,8 @@ impl Signature {
             role_pos,
             ty: None,
             style: None,
+            width: None,
+            height: None,
             shape: None,
             start: None,
             place: None,

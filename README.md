@@ -81,7 +81,7 @@ HSTACK, VSTACK). Earlier versions are not supported.
 - Literal values in formulas (12 months in a year), and values read from CSV or JSON files.
 - Formatting, through named styles: number formats (always a custom format string), fonts (name,
   size, bold, italic and color), fills, borders and their colors, alignment and wrapping; tab
-  colors and hidden sheets; and column widths, which the tool sets.
+  colors and hidden sheets; and column widths and row heights, which the file sets in pixels.
 - A command-line tool, a WebAssembly build, a website (upload a `.yup` and its inputs, download an
   xlsx), and an MCP server (check a `.yup`; later, evaluate it).
 
@@ -113,7 +113,7 @@ per member of a set of unknown size (it becomes one two-dimensional range instea
 2. Lexer, parser, checker. *Built for 0.1, and rebuilt for 0.2.*
 3. The xlsx writer. *Built for 0.1, and extended for 0.2.*
 4. Formatting. *Built for 0.2: number formats, fonts, fills, borders, alignment, tab colors,
-   hidden sheets and column widths.*
+   hidden sheets, and column widths and row heights.*
 5. The website and the MCP server.
 
 ## Decided so far
@@ -334,6 +334,9 @@ forecast = { name = 'Forecast', color = red, hidden = False, style = narrow }
   sheet.
 - `Sheet` has `name`, which follows the app's rules for sheet names, `color` (its tab's color),
   `hidden` and `style`.
+- Both have `column_width` and `row_height`, which cascade like the font: a binding's `width`
+  or `height`, then its sheet's, then the workbook's, then the app's default. *Added
+  2026-11-04; see [Built for 0.2](#built-for-02).*
 - **Styles cascade, for the font's name and size only.** A field a cell's style leaves out comes
   from its sheet's style, then from the workbook's, then from the app's default; a field that is
   set wins. The cascade fills gaps, where an update only adds. Any other field in a sheet's or the
@@ -405,7 +408,9 @@ grand_total = money
   names go in single quotes; the text of a `Label`, a `Value` or a string in a formula goes in
   double quotes. The format code for text is `'@'`.
 - **Out of scope:** underline, strikethrough, diagonal borders and cell protection. A column's
-  width belongs to the column, not to a cell's style; the tool sets widths, as in 0.1.
+  width belongs to the column, not to a cell's style. *0.1 and the first 0.2 set widths
+  themselves; from 2026-11-04 the file sets them, with `width` and `height` in a signature and
+  `column_width` and `row_height` on a sheet or the workbook.*
 
 ### Statements over several lines
 
@@ -495,6 +500,25 @@ is provisional. [docs/language.md](docs/language.md) describes 0.2 as it is buil
   style: a fill or a border runs on to the edge of the sheet.
 - **Empty columns.** A column that nothing is in, before the last column that something is in,
   is narrow, as a gap; a range of unknown width counts as being in every column from its first.
+  *Replaced 2026-11-04 by widths and heights, below.*
+- **Widths and heights** (decided 2026-11-04). Nothing is sized to fit: 0.1's widths from the
+  longest text in a column, and 0.2's narrow empty columns, were guesses, and are gone. A
+  column or row is as wide or as high as the file says, or else the app's default. `width 160`
+  and `height 28` in a signature set every column and row the binding spans; `column_width` and
+  `row_height` on a sheet set every other column and row of it, and on the workbook every other
+  column and row of each sheet that sets none. A width is refused on a range of unknown width,
+  and a height on one of unknown height. Two bindings that set the same column or row must
+  agree, and only a disagreement is an error: what matters is the size each column ends up with,
+  not which binding says so.
+- **Pixels** (decided 2026-11-04). Widths and heights are whole pixels at 100% scaling, the unit
+  the app shows for both beside its own. A height converts to the file's points exactly, at 96
+  pixels to 72 points. A width converts to the file's unit, digits of the default font with 5
+  pixels of padding, through ECMA-376 Part 1 §18.3.1.13, which gives the default font's digit as
+  7 pixels; the standard's way back to pixels gives every width from 1 to 1785 exactly. The
+  limits are the app's: a width of at most 255 digits ([MS-OI29500], Part 1 §18.3.1.13, note c),
+  so 1785 pixels, and a height of at most 409 points, so 545 pixels. A workbook whose style
+  changes the font keeps each column's width in digits, so a column grows or shrinks with the
+  font, as the app's own do (question 24).
 - **Locals are LET variables** (question 13). A formula binds each local it uses, directly or
   through other locals, with LET under the local's own name, in the order they depend on each
   other, so that each is worked out once and the formula reads as the file does. A member of a
@@ -909,6 +933,11 @@ Where 0.1 or 0.2 gives an answer, it follows in italics; [Built for 0.1](#built-
     the twenty-two in [docs/language.md](docs/language.md).*
 23. **Deterministic output:** does the same input always give byte-identical xlsx? *0.1 and 0.2:
     yes.*
+24. **Widths with another font:** a width in pixels is exact only with the default font, whose
+    digit width the standard gives (7 pixels for 11-point Calibri, ECMA-376 Part 1 §18.3.1.13).
+    The published sources give no digit widths for other fonts, so with another, a column keeps
+    its width in digits instead. Should a width then be refused, or given in digits too?
+    *0.2: neither; the docs say so.*
 
 ## References
 

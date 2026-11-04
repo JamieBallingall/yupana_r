@@ -678,6 +678,40 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
     }
 
     #[test]
+    fn bindings_set_the_widths_and_heights_of_their_columns_and_rows() {
+        let source = "name_label : Label width 160 height 28 at main $B$2\nname_label = \
+                      \"Name\"\nyear : Formula width 48 name_label right 2\nyear = 1 .. 3\ntotal : \
+                      Formula width 48 year down 1\ntotal = year * 2\n";
+        let listing = text(source, Step::Lower);
+        for line in [
+            "  row 2  [height 28]",
+            "  column B  [width 160]",
+            "  column D  [width 48]",
+            "  column F  [width 48]",
+        ] {
+            assert!(listing.contains(line), "{line}\n{listing}");
+        }
+        assert!(!listing.contains("column C"), "{listing}");
+    }
+
+    #[test]
+    fn a_width_needs_known_columns_and_two_widths_of_a_column_agree() {
+        let source = "h : Value at main $B$9\nh = 3\nyear : Formula width 48 at main $D$2\nyear = \
+                      1 .. h\na : Label width 64 at main $B$4\na = \"A\"\nb : Label width 80 \
+                      height 30 a down 1\nb = \"B\"\ne : Label height 20 b right 1\ne = \"E\"\nd \
+                      : Label width 64 b down 1\nd = \"D\"\n";
+        assert_eq!(
+            errors(source, Step::Check),
+            [
+                "8:16: error: `year` cannot set a width: how many columns it has, year_n, is \
+                 unknown when the file is written",
+                "12:11: error: `b` makes column B 80 pixels wide, and `a`, at 10:11, makes it 64",
+                "14:11: error: `e` makes row 5 20 pixels high, and `b`, at 12:20, makes it 30",
+            ]
+        );
+    }
+
+    #[test]
     fn nothing_is_counted_from_the_far_side_of_an_unknown_extent() {
         let source = "h : Value Number at main D2\nh = 3\nrow : Formula h down\nrow = 1 .. \
                       h\nafter : Formula row right\nafter = 1\n";

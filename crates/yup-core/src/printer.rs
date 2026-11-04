@@ -98,6 +98,12 @@ fn signature(sig: &Signature) -> String {
     if let Some(style) = &sig.style {
         parts.push(format!("style {}", style.name));
     }
+    if let Some((width, _)) = sig.width {
+        parts.push(format!("width {width}"));
+    }
+    if let Some((height, _)) = sig.height {
+        parts.push(format!("height {height}"));
+    }
     if let Some(shape) = &sig.shape {
         parts.push(format!(
             "size [{}, {}]",

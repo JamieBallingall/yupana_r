@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Inputs;
-use crate::cells::{looks_like_cell, looks_like_r1c1};
+use crate::cells::{self, looks_like_cell, looks_like_r1c1};
 use crate::csv::{self, Table};
 use crate::diagnostic::{Diagnostic, Pos};
 use crate::functions::Builtin;
@@ -55,6 +55,43 @@ pub struct Sheet {
     pub hidden: bool,
     /// The sheet's font, which cascades to its cells: only its name and size are ever set.
     pub font: Font,
+    /// The width of a column that no binding sets, in pixels: the sheet's `column_width`, or
+    /// else the workbook's, or else the app's default.
+    pub column_width: Option<u32>,
+    /// The height of a row that no binding sets, in pixels, cascading as `column_width` does.
+    pub row_height: Option<u32>,
+}
+
+/// The default width and height a sheet or the workbook sets for its rows and columns.
+#[derive(Clone, Copy, Debug, Default)]
+struct Defaults {
+    column_width: Option<u32>,
+    row_height: Option<u32>,
+}
+
+impl Defaults {
+    /// Reads `column_width` or `row_height`, and says whether the field was one of them.
+    fn read(&mut self, field: &Field, errors: &mut Vec<Diagnostic>) -> bool {
+        let (slot, problem, example): (_, fn(i64) -> Option<String>, _) =
+            match field.name.name.as_str() {
+                "column_width" => (&mut self.column_width, cells::width_problem, "64"),
+                "row_height" => (&mut self.row_height, cells::height_problem, "20"),
+                _ => return false,
+            };
+        let name = &field.name.name;
+        let problem = match field.value.integer() {
+            Some(pixels) => match problem(pixels) {
+                Some(problem) => problem,
+                None => {
+                    *slot = u32::try_from(pixels).ok();
+                    return true;
+                }
+            },
+            None => format!("`{name}` is a whole number of pixels, such as `{name} = {example}`"),
+        };
+        errors.push(Diagnostic::error(field.value.pos, problem));
+        true
+    }
 }
 
 /// Bindings that depend on each other in a cycle, broken by `lag 1 state seed first`: a value
@@ -766,7 +803,11 @@ fn sheets_and_workbook(
 
     let mut font = Font::default();
     let mut listed: Vec<(usize, Pos)> = Vec::new();
+    let mut defaults = Defaults::default();
     for field in record_fields(definition(workbook), "workbook", errors) {
+        if defaults.read(field, errors) {
+            continue;
+        }
         match field.name.name.as_str() {
             "sheets" => {
                 let ExprKind::List(rows) = &field.value.kind else {
@@ -802,7 +843,12 @@ fn sheets_and_workbook(
                 }
             }
             "style" => font = cascade(field, styles, errors).unwrap_or_default(),
-            other => errors.push(unknown_field("workbook", "sheets and style", other, field)),
+            other => errors.push(unknown_field(
+                "workbook",
+                "sheets, style, column_width and row_height",
+                other,
+                field,
+            )),
         }
     }
 
@@ -814,9 +860,15 @@ fn sheets_and_workbook(
             color: None,
             hidden: false,
             font: Font::default(),
+            column_width: None,
+            row_height: None,
         };
         let mut named = false;
+        let mut own = Defaults::default();
         for field in record_fields(definition(binding), "sheet", errors) {
+            if own.read(field, errors) {
+                continue;
+            }
             match field.name.name.as_str() {
                 "name" => match &field.value.kind {
                     ExprKind::Text(name) => {
@@ -856,12 +908,14 @@ fn sheets_and_workbook(
                 "style" => sheet.font = cascade(field, styles, errors).unwrap_or_default(),
                 other => errors.push(unknown_field(
                     "sheet",
-                    "name, color, hidden and style",
+                    "name, color, hidden, style, column_width and row_height",
                     other,
                     field,
                 )),
             }
         }
+        sheet.column_width = own.column_width.or(defaults.column_width);
+        sheet.row_height = own.row_height.or(defaults.row_height);
         if !named {
             errors.push(Diagnostic::error(
                 bindings[binding].pos,
@@ -1968,7 +2022,8 @@ mod tests {
             errors,
             [
                 "3:27: error: the sheet `a` is listed twice",
-                "3:34: error: a workbook has no field `colour`; its fields are sheets and style",
+                "3:34: error: a workbook has no field `colour`; its fields are sheets, style, \
+                 column_width and row_height",
                 "5:14: error: a sheet name cannot contain `/`",
                 "7:14: error: a sheet name cannot contain `/`",
                 "7:14: error: there is already a sheet called 'a/b'; sheet names ignore case",
@@ -1977,6 +2032,34 @@ mod tests {
                 "9:1: error: the workbook's `sheets` does not list `k`; every sheet is listed, in \
                  the order of the tabs",
                 "3:1: error: every sheet is hidden; at least one must be shown",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_sheet_and_the_workbook_set_default_widths_and_heights() {
+        let source = "yup 0.2\nworkbook : Workbook\nworkbook = { sheets = [a, b], column_width = \
+                      80, row_height = 24 }\na : Sheet\na = { name = 'A', column_width = 120 \
+                      }\nb : Sheet\nb = { name = 'B' }\n";
+        let model = resolve(&parse(source).expect("parses"), &Inputs::new()).expect("resolves");
+        let sizes: Vec<_> = model
+            .sheets
+            .iter()
+            .map(|sheet| (sheet.column_width, sheet.row_height))
+            .collect();
+        assert_eq!(sizes, [(Some(120), Some(24)), (Some(80), Some(24))]);
+        let wrong = "yup 0.2\nworkbook : Workbook\nworkbook = { sheets = [a], column_width = 0 \
+                     }\na : Sheet\na = { name = 'A', row_height = 2.5 }\n";
+        let errors: Vec<String> = resolve(&parse(wrong).expect("parses"), &Inputs::new())
+            .expect_err("wrong")
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            errors,
+            [
+                "3:43: error: a column is from 1 to 1785 pixels wide",
+                "5:32: error: `row_height` is a whole number of pixels, such as `row_height = 20`",
             ]
         );
     }

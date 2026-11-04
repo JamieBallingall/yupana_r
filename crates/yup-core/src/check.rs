@@ -5,10 +5,13 @@
 //! two cases. Rectangles that overlap at the smallest sizes collide, and the workbook cannot be
 //! written. Rectangles that overlap only once an unknown size grows would show `#SPILL!` in the
 //! workbook when it does: the file is still valid, so that is a warning.
+//!
+//! Check also makes sure that every width and height a binding sets can be written: on a range
+//! whose columns, or rows, are known, and agreeing with any other binding that sets the same one.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::cells::{MAX_COLUMNS, MAX_ROWS, cell_name};
+use crate::cells::{MAX_COLUMNS, MAX_ROWS, cell_name, column_name};
 use crate::diagnostic::{Diagnostic, Pos};
 use crate::ground::Grounded;
 use crate::infer::Typed;
@@ -168,10 +171,79 @@ pub fn check(
                 }
             }
         }
+        errors.extend(widths_and_heights(program, model, typed, &rects));
     }
     if errors.is_empty() {
         Ok(warnings)
     } else {
         Err(errors)
     }
+}
+
+/// Refuses a width on a range of unknown width, a height on a range of unknown height, and two
+/// bindings that set the same column, or row, to different sizes. Two that agree are fine: what
+/// matters is the size each column ends up with, not which binding says so.
+fn widths_and_heights(
+    program: &Program,
+    model: &Model,
+    typed: &Typed,
+    rects: &[Rect],
+) -> Vec<Diagnostic> {
+    let mut errors = Vec::new();
+    for columns in [true, false] {
+        let (part, noun, line, adjective) = if columns {
+            ("width", "columns", "column", "wide")
+        } else {
+            ("height", "rows", "row", "high")
+        };
+        // The size each line is set to, by the first binding to set it, and where.
+        let mut set: BTreeMap<i64, (u32, usize, Pos)> = BTreeMap::new();
+        for rect in rects {
+            let sig = model.signature(program, rect.binding);
+            let Some((pixels, pos)) = (if columns { sig.width } else { sig.height }) else {
+                continue;
+            };
+            let name = &model.bindings[rect.binding].name;
+            let (first, extent) = if columns {
+                (rect.left, &rect.width)
+            } else {
+                (rect.top, &rect.height)
+            };
+            let Some(count) = extent.as_constant() else {
+                errors.push(Diagnostic::error(
+                    pos,
+                    format!(
+                        "`{name}` cannot set a {part}: how many {noun} it has, {}, is unknown \
+                         when the file is written",
+                        typed.format(extent)
+                    ),
+                ));
+                continue;
+            };
+            for at in first..first + count {
+                match set.get(&at) {
+                    None => {
+                        set.insert(at, (pixels, rect.binding, pos));
+                    }
+                    Some(&(other_pixels, other, other_pos)) if other_pixels != pixels => {
+                        let label = match u32::try_from(at) {
+                            Ok(at) if columns => column_name(at),
+                            _ => at.to_string(),
+                        };
+                        errors.push(Diagnostic::error(
+                            pos,
+                            format!(
+                                "`{name}` makes {line} {label} {pixels} pixels {adjective}, and \
+                                 `{}`, at {other_pos}, makes it {other_pixels}",
+                                model.bindings[other].name
+                            ),
+                        ));
+                        break;
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+    }
+    errors
 }

@@ -1,4 +1,5 @@
-//! Cells and sheets as the workbook names them: A1 notation, and quoted sheet names.
+//! Cells, sheets, and the sizes of rows and columns, as the workbook writes them: A1 notation,
+//! quoted sheet names, and widths and heights in the file's own units.
 //!
 //! The parser reads a cell in A1 notation, and the printer and Lower write one; in between, a
 //! cell is a pair of numbers.
@@ -7,6 +8,40 @@
 pub const MAX_ROWS: i64 = 1_048_576;
 /// The number of columns on a sheet, from the spreadsheet app's published limits.
 pub const MAX_COLUMNS: i64 = 16_384;
+
+/// The widest digit of the default font, 11-point Calibri, in pixels at 96 dpi, as ECMA-376 Part
+/// 1 §18.3.1.13 gives it. A column's width in the file is counted in these digits.
+pub const DIGIT_PIXELS: u32 = 7;
+/// The widest a column can be, in pixels: the spreadsheet app takes a width of at most 255
+/// digits ([MS-OI29500], Part 1 §18.3.1.13, note c).
+pub const MAX_COLUMN_PIXELS: u32 = 255 * DIGIT_PIXELS;
+/// The tallest a row can be, in pixels: 409 points, from the spreadsheet app's published limits,
+/// at 72 points to 96 pixels.
+pub const MAX_ROW_PIXELS: u32 = 409 * 4 / 3;
+
+/// A column `pixels` wide as the file writes its width: in digits of the default font, padding
+/// included, truncated to 1/256 of a digit (§18.3.1.13). The standard's way back to pixels,
+/// `Truncate(((256 * width + Truncate(128 / 7)) / 256) * 7)`, gives `pixels` again.
+pub fn column_width(pixels: u32) -> f64 {
+    f64::from(pixels * 256 / DIGIT_PIXELS) / 256.0
+}
+
+/// A row `pixels` high as the file writes its height: in points, at 72 points to 96 pixels.
+pub fn row_height(pixels: u32) -> f64 {
+    f64::from(pixels) * 0.75
+}
+
+/// What is wrong with a column width of `pixels`, if anything.
+pub fn width_problem(pixels: i64) -> Option<String> {
+    (!(1..=i64::from(MAX_COLUMN_PIXELS)).contains(&pixels))
+        .then(|| format!("a column is from 1 to {MAX_COLUMN_PIXELS} pixels wide"))
+}
+
+/// What is wrong with a row height of `pixels`, if anything.
+pub fn height_problem(pixels: i64) -> Option<String> {
+    (!(1..=i64::from(MAX_ROW_PIXELS)).contains(&pixels))
+        .then(|| format!("a row is from 1 to {MAX_ROW_PIXELS} pixels high"))
+}
 
 /// The name of a column: 1 is `A`, 26 is `Z`, 27 is `AA`.
 pub fn column_name(column: u32) -> String {
@@ -108,6 +143,31 @@ mod tests {
         assert_eq!(names, ["A", "D", "Z", "AA", "AZ", "AAA", "XFD"]);
         assert_eq!(cell_name(3, 4), "D3");
         assert_eq!(absolute(3, 4), "$D$3");
+    }
+
+    #[test]
+    fn widths_and_heights_go_from_pixels_to_the_files_units_and_back() {
+        // The standard's way back from a width to pixels (§18.3.1.13), for every width there is.
+        let back = |width: f64| {
+            let digit = f64::from(DIGIT_PIXELS);
+            ((256.0 * width + (128.0 / digit).trunc()) / 256.0 * digit).trunc()
+        };
+        for pixels in 1..=MAX_COLUMN_PIXELS {
+            assert_eq!(back(column_width(pixels)), f64::from(pixels), "{pixels}");
+        }
+        assert_eq!(column_width(64), 9.140625);
+        assert_eq!(column_width(MAX_COLUMN_PIXELS), 255.0);
+        assert_eq!(row_height(28), 21.0);
+        assert!(row_height(MAX_ROW_PIXELS) <= 409.0);
+        assert_eq!(
+            width_problem(0).as_deref(),
+            Some("a column is from 1 to 1785 pixels wide")
+        );
+        assert_eq!(
+            height_problem(546).as_deref(),
+            Some("a row is from 1 to 545 pixels high")
+        );
+        assert_eq!(width_problem(1785), None);
     }
 
     #[test]

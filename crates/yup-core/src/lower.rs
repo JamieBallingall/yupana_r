@@ -44,8 +44,6 @@ const MAX_FORMULA: usize = 8_192;
 const MAX_NESTING: u32 = 64;
 /// The longest string a formula can hold, from the spreadsheet app's published limits.
 const MAX_FORMULA_STRING: usize = 255;
-/// The width of a column that nothing is in, before the last column that something is in.
-const GAP_WIDTH: f64 = 2.7;
 
 /// A workbook as cells, ready to be packaged.
 #[derive(Clone, Debug, PartialEq)]
@@ -58,7 +56,7 @@ pub struct Workbook {
     pub font: Font,
 }
 
-/// One sheet's cells, by `(row, column)`, its settings, and the styles and widths of its rows
+/// One sheet's cells, by `(row, column)`, its settings, and the styles and sizes of its rows
 /// and columns.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SheetCells {
@@ -70,7 +68,14 @@ pub struct SheetCells {
     pub row_styles: BTreeMap<u32, usize>,
     /// The style of each column that a formula of unknown height spills down.
     pub column_styles: BTreeMap<u32, usize>,
-    pub widths: BTreeMap<u32, f64>,
+    /// The width of each column a binding sets, in pixels.
+    pub widths: BTreeMap<u32, u32>,
+    /// The height of each row a binding sets, in pixels.
+    pub heights: BTreeMap<u32, u32>,
+    /// The width of every other column, in pixels, where the sheet or the workbook sets one.
+    pub column_width: Option<u32>,
+    /// The height of every other row, in pixels, where the sheet or the workbook sets one.
+    pub row_height: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -279,6 +284,9 @@ pub fn lower(
             row_styles: BTreeMap::new(),
             column_styles: BTreeMap::new(),
             widths: BTreeMap::new(),
+            heights: BTreeMap::new(),
+            column_width: sheet.column_width,
+            row_height: sheet.row_height,
         };
         let mut guards = Vec::new();
         for &binding in &model.layout {
@@ -304,7 +312,7 @@ pub fn lower(
                 });
             }
         }
-        out.widths = lowerer.widths(index, &out.cells);
+        (out.widths, out.heights) = lowerer.sizes(index);
         sheets.push(out);
     }
     for (binding, b) in model.bindings.iter().enumerate() {
@@ -976,42 +984,35 @@ impl Lowerer<'_> {
         Ok(formula)
     }
 
-    /// Column widths: each column of text wide enough for its longest text, within reason, and
-    /// each column that nothing is in, before the last that something is in, narrow, as a gap.
-    fn widths(&self, sheet: usize, cells: &Cells) -> BTreeMap<u32, f64> {
-        let mut longest: BTreeMap<u32, usize> = BTreeMap::new();
-        for (&(_, column), cell) in cells {
-            if let Value::Text(text) = &cell.value {
-                let entry = longest.entry(column).or_insert(0);
-                *entry = (*entry).max(text.chars().count());
-            }
-        }
-        let mut widths: BTreeMap<u32, f64> = longest
-            .into_iter()
-            .map(|(column, chars)| (column, (chars as f64 * 1.1 + 2.0).clamp(10.0, 60.0)))
-            .collect();
-        // The columns each range covers, those it spills into included. A range of unknown
-        // width covers every column from its first.
-        let mut used: BTreeSet<u32> = BTreeSet::new();
-        let mut open_from = u32::MAX;
+    /// The widths of the columns and the heights of the rows that the bindings on a sheet set,
+    /// in pixels. Only a binding sets one: nothing is sized to fit its contents. Check has made
+    /// sure that each is on a range of known extent and that no two disagree.
+    fn sizes(&self, sheet: usize) -> (BTreeMap<u32, u32>, BTreeMap<u32, u32>) {
+        let mut widths = BTreeMap::new();
+        let mut heights = BTreeMap::new();
         for &binding in &self.model.layout {
             if self.model.bindings[binding].sheet != Some(sheet) {
                 continue;
             }
-            let (_, column) = self.grounded.anchors[&binding];
-            let column = to_u32(column);
-            match self.grounded.shapes[binding].columns.size.as_constant() {
-                Some(width) => used.extend(column..column + to_u32(width)),
-                None => open_from = open_from.min(column),
+            let sig = self.model.signature(self.program, binding);
+            let (row, column) = self.grounded.anchors[&binding];
+            let shape = &self.grounded.shapes[binding];
+            let lines = |first: i64, size: Option<i64>| {
+                let count = size.expect("Check refuses a size on a range of unknown extent");
+                to_u32(first)..to_u32(first + count)
+            };
+            if let Some((pixels, _)) = sig.width {
+                for at in lines(column, shape.columns.size.as_constant()) {
+                    widths.insert(at, pixels);
+                }
+            }
+            if let Some((pixels, _)) = sig.height {
+                for at in lines(row, shape.rows.size.as_constant()) {
+                    heights.insert(at, pixels);
+                }
             }
         }
-        let last = used.iter().copied().max().unwrap_or(0).min(open_from);
-        for column in 1..last {
-            if !used.contains(&column) && column < open_from {
-                widths.insert(column, GAP_WIDTH);
-            }
-        }
-        widths
+        (widths, heights)
     }
 }
 
@@ -1139,6 +1140,12 @@ pub fn listing(workbook: &Workbook) -> String {
         if sheet.hidden {
             settings.push("hidden".to_string());
         }
+        if let Some(width) = sheet.column_width {
+            settings.push(format!("column width {width}"));
+        }
+        if let Some(height) = sheet.row_height {
+            settings.push(format!("row height {height}"));
+        }
         out.push_str(&format!(
             "sheet '{}'{}\n",
             sheet.name.replace('\'', "''"),
@@ -1155,15 +1162,41 @@ pub fn listing(workbook: &Workbook) -> String {
             let notes = bracketed(notes(&workbook.styles[cell.style]));
             out.push_str(&format!("  {:<6} {value}{notes}\n", cell_name(row, column)));
         }
-        for (row, style) in &sheet.row_styles {
-            let notes = bracketed(notes(&workbook.styles[*style]));
-            out.push_str(&format!("  row {row}{notes}\n"));
+        // A row or column with a style or a size of its own, with each.
+        let line = |style: Option<&usize>, size: Option<&u32>, noun: &str| {
+            let mut said = style.map_or_else(Vec::new, |style| notes(&workbook.styles[*style]));
+            said.extend(size.map(|size| format!("{noun} {size}")));
+            bracketed(said)
+        };
+        let rows: BTreeSet<u32> = sheet
+            .row_styles
+            .keys()
+            .chain(sheet.heights.keys())
+            .copied()
+            .collect();
+        for row in rows {
+            let said = line(
+                sheet.row_styles.get(&row),
+                sheet.heights.get(&row),
+                "height",
+            );
+            out.push_str(&format!("  row {row}{said}\n"));
         }
-        for (column, style) in &sheet.column_styles {
-            let notes = bracketed(notes(&workbook.styles[*style]));
+        let columns: BTreeSet<u32> = sheet
+            .column_styles
+            .keys()
+            .chain(sheet.widths.keys())
+            .copied()
+            .collect();
+        for column in columns {
+            let said = line(
+                sheet.column_styles.get(&column),
+                sheet.widths.get(&column),
+                "width",
+            );
             out.push_str(&format!(
-                "  column {}{notes}\n",
-                crate::cells::column_name(*column)
+                "  column {}{said}\n",
+                crate::cells::column_name(column)
             ));
         }
     }

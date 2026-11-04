@@ -69,6 +69,8 @@ Every step prints them in the order of this table.
 | role | `Formula` | all |
 | type | `Number`, `Number -> Number`, `Cell` | see below |
 | style | `style money` | `Formula`, `Value`, `Label`: optional; without one, the default |
+| width | `width 160` | `Formula`, `Value`, `Label`: optional |
+| height | `height 28` | `Formula`, `Value`, `Label`: optional |
 | size | `size [1, n - 1]` | `Formula`, `Value`, `Label`, `Local`: optional, checked |
 | start | `start [0, 1]` | `Formula`, `Value`, `Label`, `Local`: optional, checked |
 | place | `at forecast $B$2`, `revenue down 2` | `Formula`, `Value`, `Label`: required |
@@ -286,6 +288,33 @@ something once an unknown size grows: the workbook would show `#SPILL!` there. I
 when two ranges placed one from the other share a size along an axis but do not line up along
 it, position by position, unless the placement steps off the reference along that axis.
 
+## Widths and heights
+
+Nothing is sized to fit its contents: a column is as wide, and a row as high, as the file says,
+or else the app's default.
+
+```text
+workbook = { sheets = [inputs, forecast], column_width = 80, row_height = 20 }
+forecast = { name = 'Forecast', column_width = 96 }
+horizon_label : Label style label width 160 at forecast $B$2
+```
+
+- Widths and heights are whole numbers of pixels at 100% display scaling, as the app shows them
+  beside its own units when a column or row is resized.
+- `width` in a signature sets every column the binding spans, and `height` every row. A width is
+  refused on a range whose columns are unknown when the file is written, and a height on one
+  whose rows are.
+- Two bindings may set the same column, or the same row, if they agree; if they differ, Check
+  refuses them and names both.
+- A sheet's `column_width` and `row_height` size every column and row that no binding sets. The
+  workbook's apply to each sheet that does not set its own, and the app's defaults to the rest.
+- A column is from 1 to 1785 pixels wide and a row from 1 to 545 pixels high: the app's limits of
+  255 characters and 409 points.
+- The file counts a column's width in digits of the default font, so a width in pixels is
+  exact with the default font, 11-point Calibri, whose digits are 7 pixels wide. With another, a
+  column keeps its width in digits, and grows or shrinks with the font, as the app's own
+  columns do. A row's height is in points in the file, and is always exact.
+
 ## Styles
 
 A style is a binding whose role is `Style` and whose definition is a record of its type:
@@ -346,6 +375,9 @@ forecast = { name = 'Forecast', color = red, hidden = False, style = big }
 - A sheet's name follows the spreadsheet app's rules: 1 to 31 characters, none of
   `: \ / ? * [ ]`, not starting or ending with `'`, not `History`, and unique ignoring case.
 - `color` is the color of the sheet's tab.
+- `column_width` and `row_height`, on a sheet or the workbook, are the width of every column
+  and the height of every row that no binding sets, in pixels; a sheet's win over the
+  workbook's. See [Widths and heights](#widths-and-heights).
 - The style of a sheet or of the workbook sets only the font's name and size. A cell's style
   that leaves either out takes it from its sheet's style, then from the workbook's, then from
   the app's default.
@@ -360,8 +392,8 @@ forecast = { name = 'Forecast', color = red, hidden = False, style = big }
 - Every name follows the rules for defined names, so that exporting a binding never forces a
   rename. A name cannot read as a cell (`tax2026`) or as R1C1 notation (`r`, `c`, `r1c1`), and
   cannot be the name of a built-in function or a keyword: `across`, `at`, `down`, `east`,
-  `else`, `false`, `from`, `if`, `left`, `north`, `right`, `seed`, `size`, `south`, `start`,
-  `style`, `then`, `true`, `up`, `west` or `yup`.
+  `else`, `false`, `from`, `height`, `if`, `left`, `north`, `right`, `seed`, `size`, `south`,
+  `start`, `style`, `then`, `true`, `up`, `west`, `width` or `yup`.
 - Defined names ignore case, so these rules do too: `taX2026` reads as a cell, and `sUm` is the
   function `sum`. Two names that differ only in case are an error, as is a lambda's parameter
   that differs only in case from a name in the file. A name is written the same way everywhere:
@@ -398,5 +430,6 @@ workbook decides.
 - The cells a formula spills into take its style. Where the extent is known, they are written as
   empty cells with that style. Where it is not, the style goes on the whole row or column the
   range grows along, and the cells before the range on it keep the default.
-- A column that nothing is in, before the last column that something is in, is narrow.
+- A column or row has the width or height the file gives it, or else the app's default:
+  nothing is sized to fit what is in it.
 - The same file always gives the same bytes.

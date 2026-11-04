@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::cells::cell_name;
+use crate::cells::{cell_name, column_width, row_height};
 use crate::lower::{Cell, DEFAULT_FONT, DEFAULT_SIZE, SheetCells, Value, Workbook, number};
 use crate::style::{Alignment, Border, CellStyle, Font, Rgb};
 use crate::zip;
@@ -498,7 +498,19 @@ fn sheet_xml(sheet: &SheetCells, active: bool, strings: &SharedStrings) -> Strin
     x.push_str(&format!(
         "<sheetViews><sheetView{selected} workbookViewId=\"0\"/></sheetViews>"
     ));
-    x.push_str("<sheetFormatPr defaultRowHeight=\"15\"/>");
+    // The default row height is required (§18.3.1.81). Without one of the sheet's own it is the
+    // default font's, and the app sizes each row to its font.
+    let default_width = sheet.column_width.map_or_else(String::new, |pixels| {
+        format!(" defaultColWidth=\"{}\"", column_width(pixels))
+    });
+    let default_height = match sheet.row_height {
+        Some(pixels) => format!(
+            " defaultRowHeight=\"{}\" customHeight=\"1\"",
+            row_height(pixels)
+        ),
+        None => " defaultRowHeight=\"15\"".to_string(),
+    };
+    x.push_str(&format!("<sheetFormatPr{default_width}{default_height}/>"));
     let columns: BTreeSet<u32> = sheet
         .widths
         .keys()
@@ -509,8 +521,11 @@ fn sheet_xml(sheet: &SheetCells, active: bool, strings: &SharedStrings) -> Strin
         x.push_str("<cols>");
         for column in columns {
             x.push_str(&format!("<col min=\"{column}\" max=\"{column}\""));
-            if let Some(width) = sheet.widths.get(&column) {
-                x.push_str(&format!(" width=\"{width:.2}\" customWidth=\"1\""));
+            if let Some(&pixels) = sheet.widths.get(&column) {
+                x.push_str(&format!(
+                    " width=\"{}\" customWidth=\"1\"",
+                    column_width(pixels)
+                ));
             }
             if let Some(style) = sheet.column_styles.get(&column) {
                 x.push_str(&format!(" style=\"{style}\""));
@@ -525,12 +540,20 @@ fn sheet_xml(sheet: &SheetCells, active: bool, strings: &SharedStrings) -> Strin
         .keys()
         .map(|&(row, _)| row)
         .chain(sheet.row_styles.keys().copied())
+        .chain(sheet.heights.keys().copied())
         .collect();
     for r in rows {
-        match sheet.row_styles.get(&r) {
-            Some(style) => x.push_str(&format!("<row r=\"{r}\" s=\"{style}\" customFormat=\"1\">")),
-            None => x.push_str(&format!("<row r=\"{r}\">")),
+        x.push_str(&format!("<row r=\"{r}\""));
+        if let Some(style) = sheet.row_styles.get(&r) {
+            x.push_str(&format!(" s=\"{style}\" customFormat=\"1\""));
         }
+        if let Some(&pixels) = sheet.heights.get(&r) {
+            x.push_str(&format!(
+                " ht=\"{}\" customHeight=\"1\"",
+                row_height(pixels)
+            ));
+        }
+        x.push('>');
         for (&(_, c), cell) in sheet.cells.range((r, 0)..=(r, u32::MAX)) {
             x.push_str(&cell_xml(cell_name(r, c), cell, strings));
         }
@@ -682,7 +705,10 @@ mod tests {
                 cells,
                 row_styles: BTreeMap::from([(3, 1), (5, 1)]),
                 column_styles: BTreeMap::from([(7, 1)]),
-                widths: BTreeMap::from([(2, 20.0)]),
+                widths: BTreeMap::from([(2, 64)]),
+                heights: BTreeMap::from([(5, 28)]),
+                column_width: Some(96),
+                row_height: None,
             }],
             names: vec![DefinedName {
                 name: "rate".to_string(),
@@ -742,7 +768,14 @@ mod tests {
         ));
         assert!(sheet.contains("<c r=\"D2\" s=\"1\"><v>0.25</v></c>"));
         assert!(sheet.contains("<row r=\"3\" s=\"1\" customFormat=\"1\"><c r=\"B3\""));
-        assert!(sheet.contains("<row r=\"5\" s=\"1\" customFormat=\"1\"></row></sheetData>"));
+        assert!(sheet.contains(
+            "<row r=\"5\" s=\"1\" customFormat=\"1\" ht=\"21\" customHeight=\"1\"></row></sheetData>"
+        ));
+        assert!(
+            sheet.contains(
+                "<sheetFormatPr defaultColWidth=\"13.7109375\" defaultRowHeight=\"15\"/>"
+            )
+        );
         assert!(
             find("xl/styles.xml")
                 .contains("<numFmt numFmtId=\"164\" formatCode=\"0.0%&quot;x&quot;\"/>")
@@ -752,7 +785,7 @@ mod tests {
              rgb=\"FFFF0000\"/></sheetPr>"
         )));
         assert!(sheet.contains(
-            "<cols><col min=\"2\" max=\"2\" width=\"20.00\" customWidth=\"1\"/><col min=\"7\" \
+            "<cols><col min=\"2\" max=\"2\" width=\"9.140625\" customWidth=\"1\"/><col min=\"7\" \
              max=\"7\" style=\"1\"/></cols>"
         ));
     }
