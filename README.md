@@ -410,7 +410,39 @@ replaced by their values. Running the pipeline on it gives it back unchanged.
 ## Built for 0.2
 
 Decided while building 0.2, from 2026-11-03, where the decisions above left something open. Each
-is provisional.
+is provisional. [docs/language.md](docs/language.md) describes 0.2 as it is built.
+
+- **The first line** is `yup 0.2`, and a reader of 0.2 refuses 0.1: no file in 0.1 is kept.
+- **The order of a signature's parts** is role, type, style, size, start and place.
+- **Directions.** `a .. b` is a row, and a column is `transpose (a .. b)`, which the workbook
+  gets as a column of whole numbers rather than a row transposed. `lag`, `tail` and `init` work
+  along a range's one dimension; a range of more than one row and column, and anything inside a
+  lambda, says which with `across` or `down` straight after the function's name. A value carried
+  from one position to the next runs along a row or down a column.
+- **Moves left and up** land the binding's own last column or row at the count, so that it sits
+  beside its reference rather than over it, and so need the binding's own extent.
+- **The alignment check** applies along an axis with no move, or with a move that counts from the
+  reference's own near side (`down 1 right 1 from west`). A move that steps off the reference
+  along an axis puts the two side by side there, so it is not checked.
+- **Place prints as Infer does.** A place that depends on a fixed size, such as row `s + 3`, has
+  no A1 form; Ground prints every place as a cell.
+- **Types are worked out** for every formula, value and local where its cells hold one type, and
+  written into its signature from Infer on. Arithmetic on text is an error. `na` builds `#N/A`,
+  whose type goes with any other.
+- **A table's empty fields** are written as empty cells, with the table's style.
+- **Styles of spilled cells.** Where a formula's extent is known, the cells it spills into are
+  written as empty cells with its style. Where it is not, the style goes on the whole row or
+  column the range grows along, and the cells before the range on that row or column are
+  written with the default style. Past the end of
+  such a spill, the row or column keeps the style: a fill or a border runs on to the edge of the
+  sheet.
+- **Empty columns.** A column that nothing is in, before the last column that something is in,
+  is narrow, as a gap; a range of unknown width counts as being in every column from its first.
+- **The default font** stays as in 0.1, the typeface and size of the standard's own examples, and
+  the workbook's style changes it.
+- **Error messages** name what to write instead where the mistake is a habit from the
+  spreadsheet app: `f(a, b)`, `SUM(x)`, a cell such as `B2` in a formula, `true` for `True`,
+  `Input` for `Value`, and the statements of 0.1.
 
 ## The range model
 

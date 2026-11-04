@@ -1,40 +1,79 @@
-yup 0.1
+yup 0.2
 
-// Revenue by segment for an invented retailer. The number of segments is fixed
-// when the file is written; the horizon is decided in the workbook.
+// Revenue by segment for an invented retailer. The segments are read from segments.csv beside
+// this file, so their number is known when the workbook is written; the horizon is decided in
+// the workbook.
 
-segments : Size Fixed
-segments = 3
+workbook : Workbook
+workbook = { sheets = [inputs, revenue_sheet] }
 
-sheet 'Inputs'
+inputs : Sheet
+inputs = { name = 'Inputs' }
 
-horizon : 'Forecast horizon (years)' Input
+revenue_sheet : Sheet
+revenue_sheet = { name = 'Revenue' }
+
+label : Style Cell
+label = { format = '@' }
+
+heading : Style Cell
+heading = label { font = { bold = True } }
+
+money : Style Cell
+money = { format = '#,##0' }
+
+percent : Style Cell
+percent = { format = '0.0%' }
+
+total : Style Cell
+total = money { font = { bold = True }, border = { top = { weight = Thin } } }
+
+// Inputs
+
+horizon_label : Label label at inputs B2
+horizon_label = "Forecast horizon (years)"
+
+horizon : Value Number _ horizon_label right 2
 horizon = 6
 
-segment_names : [1, segments] 'Segment' Input
-segment_names = ["Retail", "Wholesale", "Online"]
+segment_header : Label heading horizon_label down 2
+segment_header = "Segment"
 
-base_revenue : [1, segments] 'Revenue in the base year' Input Format "#,##0"
-base_revenue = [400, 250, 150]
+base_header : Label heading segment_header right
+base_header = "Revenue in the base year"
 
-growth_rates : [1, segments] 'Growth per year' Input Format "0.0%"
-growth_rates = [0.02, 0.04, 0.15]
+growth_header : Label heading base_header right
+growth_header = "Growth per year"
 
-sheet 'Revenue'
+segments : Value _ segment_header down
+segments = csv "segments.csv"
 
-year : 'Year'
+// Revenue
+
+year_label : Label label at revenue_sheet B2
+year_label = "Year"
+
+year : Formula Number _ year_label right 2
 year = 1 .. horizon
 
-// One row per segment, one column per year: a column of segments times a row of
-// years gives a grid.
-revenue : 'Revenue by segment' Format "#,##0"
-revenue = transpose base_revenue * (1 + transpose growth_rates) ^ year
+// A formula of text: the segments' names, one to a row, beside their revenue.
+names : Formula Text label year_label down
+names = column "segment" segments
 
-gap
+// One row per segment, one column per year: a column of segments times a row of years gives a
+// grid.
+revenue : Formula Number money names right 2
+revenue = column "base" segments * (1 + column "growth" segments) ^ year
 
 // The rows above have a fixed height, so these rows can go below them.
-total : 'Total revenue' Format "#,##0" Bold
-total = sum_columns revenue
+total_label : Label heading names down 2
+total_label = "Total revenue"
 
-total_growth : 'Growth in total revenue' Format "0.0%"
-total_growth = tail total / lag 1 total - 1
+total_revenue : Formula Number total total_label right 2
+total_revenue = sum_columns revenue
+
+total_growth_label : Label label total_label down
+total_growth_label = "Growth in total revenue"
+
+total_growth : Formula Number percent total_revenue down 1 right 1 from west
+total_growth = tail total_revenue / lag 1 total_revenue - 1

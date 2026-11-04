@@ -7,14 +7,23 @@
 //!
 //! Every `a .. b` whose end is not known when the file is written introduces a new `Unknown`
 //! size. A signature can name it, and the name is checked rather than trusted.
+//!
+//! `lag`, `tail` and `init` work along a range's one dimension when it has only one: across a
+//! row, or down a column. A range of more than one row and column needs the direction written.
+//!
+//! Infer also works out what each cell holds, as the spreadsheet app's TYPE function tells them
+//! apart: a number, text or a logical. A signature's type is checked against it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::csv::Field;
 use crate::diagnostic::{Diagnostic, Pos};
 use crate::functions::Builtin;
-use crate::resolve::{Model, Recurrence, Role, Symbol};
+use crate::resolve::{Model, Recurrence, Symbol};
 use crate::size::SizeExpr;
-use crate::syntax::{Expr, ExprKind, Ident, Program, Signature, SizeKind, SizeSyntax};
+use crate::syntax::{
+    Axis, BinOp, CellType, Expr, ExprKind, Ident, Program, Role, Signature, SizeKind, SizeSyntax,
+};
 
 /// Where a range sits along one dimension: `size` positions, starting at position `start`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,17 +74,24 @@ pub struct Var {
     pub introduced_by: Option<usize>,
 }
 
-/// The shape of every binding, in terms of the size variables.
+/// The shape and the cell type of every binding, in terms of the size variables.
 #[derive(Clone, Debug)]
 pub struct Typed {
     pub vars: Vec<Var>,
     pub shapes: Vec<Shape>,
-    /// The parts of a recurrence that lie outside its cycle and are rows, by position: inside the
-    /// scan that works the recurrence out, they are read one period at a time.
-    pub rows: BTreeSet<Pos>,
-    /// For each balance carried from one period to the next, the part outside its cycle whose
+    /// What each binding's cells hold, where that is one type.
+    pub types: Vec<Option<CellType>>,
+    /// The parts of a recurrence that lie outside its cycle and run along it, by position:
+    /// inside the scan that works the recurrence out, they are read one position at a time.
+    pub along: BTreeSet<Pos>,
+    /// For each value carried from one position to the next, the part outside its cycle whose
     /// length the scan runs over.
     pub drivers: BTreeMap<usize, Pos>,
+    /// The way each carried value runs.
+    pub carried: BTreeMap<usize, Axis>,
+    /// The way each `lag`, `tail` and `init` outside a lambda works, by its position, where the
+    /// file does not write it.
+    pub axes: BTreeMap<Pos, Axis>,
 }
 
 impl Typed {
@@ -119,11 +135,31 @@ struct Infer<'a> {
     shapes: Vec<Option<Shape>>,
     errors: Vec<Diagnostic>,
     current: usize,
-    /// The shapes of the parameters of the functions being called, innermost last. A function
+    /// The shapes of the parameters of the lambdas being called, innermost last. A lambda's
     /// body sees its own parameters only.
     params: Vec<BTreeMap<String, Shape>>,
-    rows: BTreeSet<Pos>,
+    along: BTreeSet<Pos>,
     drivers: BTreeMap<usize, Pos>,
+    carried: BTreeMap<usize, Axis>,
+    axes: BTreeMap<Pos, Axis>,
+    types: Vec<Option<CellType>>,
+}
+
+/// What a cell holds, as far as Infer can tell: one type, any of them, or none at all, which an
+/// error such as `na` gives and which goes with anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ty {
+    Known(CellType),
+    Any,
+    Never,
+}
+
+fn join(a: Ty, b: Ty) -> Ty {
+    match (a, b) {
+        (Ty::Never, other) | (other, Ty::Never) => other,
+        (a, b) if a == b => a,
+        _ => Ty::Any,
+    }
 }
 
 /// Infers the shape of every binding in `model`.
@@ -154,8 +190,11 @@ pub fn infer(program: &Program, model: &Model) -> Result<Typed, Vec<Diagnostic>>
         errors: Vec::new(),
         current: 0,
         params: Vec::new(),
-        rows: BTreeSet::new(),
+        along: BTreeSet::new(),
         drivers: BTreeMap::new(),
+        carried: BTreeMap::new(),
+        axes: BTreeMap::new(),
+        types: vec![None; model.bindings.len()],
     };
     for &binding in &model.order {
         match model.recurrence_of(binding) {
@@ -164,6 +203,28 @@ pub fn infer(program: &Program, model: &Model) -> Result<Typed, Vec<Diagnostic>>
             Some(_) => {}
             None => infer.binding(binding),
         }
+    }
+    // What cannot be used by a formula has a shape of its own: a label is one cell, and styles,
+    // sheets and the workbook have no cells.
+    for (binding, b) in model.bindings.iter().enumerate() {
+        match b.role {
+            Role::Label => {
+                infer.current = binding;
+                let sig = model.signature(program, binding);
+                match infer.check_signature(sig, Shape::scalar()) {
+                    Ok(shape) => infer.shapes[binding] = Some(shape),
+                    Err(error) => infer.errors.push(error),
+                }
+                infer.types[binding] = Some(CellType::Text);
+            }
+            Role::Style | Role::Sheet | Role::Workbook => {
+                infer.shapes[binding] = Some(Shape::scalar());
+            }
+            _ => {}
+        }
+    }
+    for &binding in &model.order {
+        infer.cell_type(binding);
     }
     infer.finish()
 }
@@ -232,8 +293,8 @@ impl Infer<'_> {
 
     fn binding(&mut self, binding: usize) {
         self.current = binding;
-        // A function has no shape of its own; each call is inferred where it is made.
-        if self.model.bindings[binding].role == Role::Function {
+        // A lambda has no shape of its own; each call is inferred where it is made.
+        if self.model.bindings[binding].role == Role::Lambda {
             self.shapes[binding] = Some(Shape::scalar());
             return;
         }
@@ -245,22 +306,26 @@ impl Infer<'_> {
                 return;
             }
         };
-        let shape = match self.model.signature(self.program, binding) {
-            Some(sig) => match self.check_signature(sig, shape) {
-                Ok(shape) => shape,
-                Err(error) => {
-                    self.errors.push(error);
-                    return;
-                }
-            },
-            None => shape,
+        let sig = self.model.signature(self.program, binding);
+        let shape = match self.check_signature(sig, shape) {
+            Ok(shape) => shape,
+            Err(error) => {
+                self.errors.push(error);
+                return;
+            }
         };
         self.shapes[binding] = Some(shape);
     }
 
     fn shape(&mut self, expr: &Expr) -> Inferred {
         match &expr.kind {
-            ExprKind::Number { .. } | ExprKind::Str(_) | ExprKind::Bool(_) => Ok(Shape::scalar()),
+            ExprKind::Number { .. }
+            | ExprKind::Str(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Text(_)
+            | ExprKind::Constructor(_)
+            | ExprKind::Record(_)
+            | ExprKind::Update { .. } => Ok(Shape::scalar()),
             ExprKind::Name(name)
                 if self
                     .params
@@ -273,7 +338,8 @@ impl Infer<'_> {
                 // A binding whose definition is wrong has been reported; what uses it is not.
                 Some(Symbol::Binding(binding)) => self.shapes[*binding].clone().ok_or(None),
                 Some(Symbol::Size(_)) => Ok(Shape::scalar()),
-                None => unreachable!("Resolve reports unknown names"),
+                // A function of no arguments, such as `na`.
+                None => Ok(Shape::scalar()),
             },
             ExprKind::Neg(operand) => self.shape(operand),
             ExprKind::Binary { op, left, right } => {
@@ -323,15 +389,20 @@ impl Infer<'_> {
                 })
             }
             ExprKind::Range { first, last } => self.range(expr, first, last),
-            ExprKind::Apply { func, args, seed } => match Builtin::lookup(&func.name) {
-                Some(builtin) => self.apply(expr, builtin, args, seed.as_deref()),
+            ExprKind::Apply {
+                func,
+                axis,
+                args,
+                seed,
+            } => match Builtin::lookup(&func.name) {
+                Some(builtin) => self.apply(expr, builtin, *axis, args, seed.as_deref()),
                 None => self.call(func, args),
             },
         }
     }
 
-    /// A call of a function of the file's own. Its body is inferred with its parameters taking
-    /// the shapes of the arguments, so each call has the shape its arguments give it.
+    /// A call of a lambda of the file's own. Its body is inferred with its parameters taking the
+    /// shapes of the arguments, so each call has the shape its arguments give it.
     fn call(&mut self, func: &Ident, args: &[Expr]) -> Inferred {
         let Some(&Symbol::Binding(binding)) = self.model.symbols.get(&func.name) else {
             unreachable!("Resolve checks function names");
@@ -393,40 +464,87 @@ impl Infer<'_> {
         })
     }
 
+    /// The way `lag`, `tail` or `init` works on `x`: as written, or along `x`'s one dimension.
+    fn axis(
+        &mut self,
+        x: &Shape,
+        written: Option<Axis>,
+        pos: Pos,
+        what: &str,
+    ) -> Result<Axis, Option<Diagnostic>> {
+        if let Some(axis) = written {
+            return Ok(axis);
+        }
+        // A lambda's body is written once into the workbook, however it is called, so it says
+        // which way it works.
+        if !self.params.is_empty() {
+            return Err(fail(
+                pos,
+                format!(
+                    "inside a lambda, `{what}` says which way it works, `across` or `down`, as in \
+                     `{what} across x`: the lambda may be given rows or columns"
+                ),
+            ));
+        }
+        let axis = match (self.is_one(&x.rows.size), self.is_one(&x.columns.size)) {
+            (false, true) => Axis::Down,
+            (true, _) => Axis::Across,
+            (false, false) => {
+                return Err(fail(
+                    pos,
+                    format!(
+                        "`{what}` works across or down, and this range has more than one row and \
+                         column: say which, as in `{what} across x`"
+                    ),
+                ));
+            }
+        };
+        self.axes.insert(pos, axis);
+        Ok(axis)
+    }
+
     fn apply(
         &mut self,
         expr: &Expr,
         builtin: Builtin,
+        written: Option<Axis>,
         args: &[Expr],
         seed: Option<&Expr>,
     ) -> Inferred {
         match builtin {
             Builtin::Lag => {
-                let periods = periods(&args[0], "lag")?;
+                let steps = steps(&args[0], "lag")?;
                 let x = self.shape(&args[1])?;
+                let axis = self.axis(&x, written, expr.pos, "lag")?;
                 let Some(seed) = seed else {
-                    return self.shift(&x, periods, periods, expr.pos, "lag");
+                    return self.shift(&x, axis, steps, steps, expr.pos, "lag");
                 };
-                if periods != 1 {
+                if steps != 1 {
                     return Err(fail(
                         seed.pos,
-                        "`from` gives one column of first values, so it goes with `lag 1`",
+                        "`seed` gives one position of first values, so it goes with `lag 1`",
                     ));
                 }
                 let first = self.shape(seed)?;
-                if !self.is_one(&first.columns.size) {
+                let (across, along) = match axis {
+                    Axis::Across => (&first.columns, (&first.rows, &x.rows, "rows")),
+                    Axis::Down => (&first.rows, (&first.columns, &x.columns, "columns")),
+                };
+                if !self.is_one(&across.size) {
                     return Err(fail(
                         seed.pos,
-                        "the first values after `from` are one column",
+                        "the first values after `seed` are one position of the range",
                     ));
                 }
-                if !self.same(&first.rows.size, &x.rows.size) {
+                let (seed_extent, x_extent, dimension) = along;
+                if !self.is_one(&seed_extent.size) && !self.same(&seed_extent.size, &x_extent.size)
+                {
                     return Err(fail(
                         seed.pos,
                         format!(
-                            "the first values after `from` have {} rows, and the range has {}",
-                            self.show(&first.rows.size),
-                            self.show(&x.rows.size)
+                            "the first values after `seed` have {} {dimension}, and the range has {}",
+                            self.show(&seed_extent.size),
+                            self.show(&x_extent.size)
                         ),
                     ));
                 }
@@ -434,12 +552,15 @@ impl Infer<'_> {
             }
             Builtin::Tail => {
                 let x = self.shape(&args[0])?;
-                self.shift(&x, 1, 1, expr.pos, "tail")
+                let axis = self.axis(&x, written, expr.pos, "tail")?;
+                self.shift(&x, axis, 1, 1, expr.pos, "tail")
             }
             Builtin::Init => {
                 let x = self.shape(&args[0])?;
-                self.shift(&x, 0, 1, expr.pos, "init")
+                let axis = self.axis(&x, written, expr.pos, "init")?;
+                self.shift(&x, axis, 0, 1, expr.pos, "init")
             }
+            Builtin::Na => Ok(Shape::scalar()),
             Builtin::Sum | Builtin::Average | Builtin::Minimum | Builtin::Maximum => {
                 self.shape(&args[0])?;
                 Ok(Shape::scalar())
@@ -524,10 +645,10 @@ impl Infer<'_> {
         }
     }
 
-    /// Infers a recurrence, in two passes. First the balance, where it is lagged, is taken as a
-    /// single value, which stretches to fit anything: that gives the balance its shape from what
-    /// lies outside the cycle. Then every member is inferred again, with that shape for the
-    /// balance and with its signature checked, and the balance must come out the same.
+    /// Infers a recurrence, in two passes. First the carried value, where it is lagged, is taken
+    /// as a single value, which stretches to fit anything: that gives it its shape from what lies
+    /// outside the cycle. Then every member is inferred again, with that shape for the carried
+    /// value and with its signature checked, and it must come out the same.
     fn recurrence(&mut self, recurrence: &Recurrence) {
         let state = recurrence.state;
         let name = &self.model.bindings[state].name;
@@ -572,31 +693,40 @@ impl Infer<'_> {
         if !self.same_shape(&assumed, &settled) {
             return fail(self, format!("the size of `{name}` does not settle"));
         }
-        if !self.is_one(&settled.rows.size) {
-            return fail(
-                self,
-                format!(
-                    "a balance carried from one period to the next is one row, and `{name}` has \
-                     {} rows",
-                    self.show(&settled.rows.size)
-                ),
-            );
-        }
+        let axis = match (
+            self.is_one(&settled.rows.size),
+            self.is_one(&settled.columns.size),
+        ) {
+            (true, _) => Axis::Across,
+            (false, true) => Axis::Down,
+            (false, false) => {
+                return fail(
+                    self,
+                    format!(
+                        "a value carried from one position to the next is one row or one column, \
+                         and `{name}` has {} rows and {} columns",
+                        self.show(&settled.rows.size),
+                        self.show(&settled.columns.size)
+                    ),
+                );
+            }
+        };
         let members: BTreeSet<usize> = recurrence.members.iter().copied().collect();
         let mut driver = None;
         for &member in &recurrence.members {
             let definition = self.model.definition(self.program, member);
-            self.outside_rows(definition, &members, &mut driver);
+            self.outside_along(definition, &members, axis, &mut driver);
         }
         match driver {
             Some(driver) => {
                 self.drivers.insert(state, driver);
+                self.carried.insert(state, axis);
             }
             None => fail(
                 self,
                 format!(
-                    "nothing outside the cycle gives `{name}` its length: it needs a row it uses \
-                     period by period, such as a timeline"
+                    "nothing outside the cycle gives `{name}` its length: it needs a row or a \
+                     column it uses position by position, such as a timeline"
                 ),
             ),
         }
@@ -617,23 +747,33 @@ impl Infer<'_> {
     }
 
     /// Finds the largest parts of a member's definition that lie outside the cycle, and records
-    /// those that are rows. The first is the one whose length the scan runs over.
-    fn outside_rows(&mut self, expr: &Expr, members: &BTreeSet<usize>, driver: &mut Option<Pos>) {
+    /// those that run along it. The first is the one whose length the scan runs over.
+    fn outside_along(
+        &mut self,
+        expr: &Expr,
+        members: &BTreeSet<usize>,
+        axis: Axis,
+        driver: &mut Option<Pos>,
+    ) {
         if !self.mentions(expr, members) {
-            if let Ok(shape) = self.shape(expr)
-                && !self.is_one(&shape.columns.size)
-            {
-                self.rows.insert(expr.pos);
-                driver.get_or_insert(expr.pos);
+            if let Ok(shape) = self.shape(expr) {
+                let length = match axis {
+                    Axis::Across => &shape.columns.size,
+                    Axis::Down => &shape.rows.size,
+                };
+                if !self.is_one(length) {
+                    self.along.insert(expr.pos);
+                    driver.get_or_insert(expr.pos);
+                }
             }
             return;
         }
         match &expr.kind {
-            // The balance a period back is the scan's own; its first value starts the scan.
+            // The value a position back is the scan's own; its first value starts the scan.
             ExprKind::Apply { func, .. } if func.name == "lag" => {}
             _ => {
                 for child in expr.children() {
-                    self.outside_rows(child, members, driver);
+                    self.outside_along(child, members, axis, driver);
                 }
             }
         }
@@ -644,24 +784,43 @@ impl Infer<'_> {
         same(&a.rows, &b.rows) && same(&a.columns, &b.columns)
     }
 
-    /// Drops `dropped` columns and moves the start along by `start`: `lag k` moves by `k`,
-    /// `tail` by 1, and `init` stays put.
-    fn shift(&self, x: &Shape, start: i64, dropped: i64, pos: Pos, what: &str) -> Inferred {
-        let size = x.columns.size.offset(-dropped);
+    /// Drops `dropped` positions along `axis` and moves the start along by `start`: `lag k`
+    /// moves by `k`, `tail` by 1, and `init` stays put.
+    fn shift(
+        &self,
+        x: &Shape,
+        axis: Axis,
+        start: i64,
+        dropped: i64,
+        pos: Pos,
+        what: &str,
+    ) -> Inferred {
+        let (along, dimension) = match axis {
+            Axis::Across => (&x.columns, "columns"),
+            Axis::Down => (&x.rows, "rows"),
+        };
+        let size = along.size.offset(-dropped);
         if self.normal(&size).as_constant().is_some_and(|n| n < 1) {
             return Err(fail(
                 pos,
                 format!(
-                    "`{what}` leaves no columns of a range that has {}",
-                    self.show(&x.columns.size)
+                    "`{what}` leaves no {dimension} of a range that has {}",
+                    self.show(&along.size)
                 ),
             ));
         }
-        Ok(Shape {
-            rows: x.rows.clone(),
-            columns: Extent {
-                start: x.columns.start + start,
-                size,
+        let shifted = Extent {
+            start: along.start + start,
+            size,
+        };
+        Ok(match axis {
+            Axis::Across => Shape {
+                rows: x.rows.clone(),
+                columns: shifted,
+            },
+            Axis::Down => Shape {
+                rows: shifted,
+                columns: x.columns.clone(),
             },
         })
     }
@@ -705,7 +864,7 @@ impl Infer<'_> {
             shape.columns.size =
                 self.match_size(&written.columns, &shape.columns.size, name, "columns")?;
         }
-        if let Some(from) = &sig.from
+        if let Some(from) = &sig.start
             && (from.row, from.column) != (shape.rows.start, shape.columns.start)
         {
             return Err(Diagnostic::error(
@@ -806,6 +965,205 @@ impl Infer<'_> {
         ok.then_some((var, introduced))
     }
 
+    /// Works out what a binding's cells hold, and checks it against its signature.
+    fn cell_type(&mut self, binding: usize) {
+        let b = &self.model.bindings[binding];
+        let expr = self.model.definition(self.program, binding);
+        let ty = match b.role {
+            Role::Lambda => {
+                let params: BTreeMap<String, CellType> = b
+                    .params
+                    .iter()
+                    .cloned()
+                    .zip(b.function.iter().copied())
+                    .collect();
+                let result = *b.function.last().expect("a lambda's type has a result");
+                match self.ty(expr, &params) {
+                    Ok(Ty::Known(found)) if found != result => self.errors.push(Diagnostic::error(
+                        expr.pos,
+                        format!(
+                            "`{}` gives {}, and its type says {}",
+                            b.name,
+                            found.word(),
+                            result.word()
+                        ),
+                    )),
+                    Ok(_) => {}
+                    Err(error) => self.errors.push(error),
+                }
+                return;
+            }
+            Role::Value if self.model.tables.contains_key(&binding) => Ty::Any,
+            _ => match self.ty(expr, &BTreeMap::new()) {
+                Ok(ty) => ty,
+                Err(error) => {
+                    self.errors.push(error);
+                    return;
+                }
+            },
+        };
+        let sig = self.model.signature(self.program, binding);
+        if let (Some(declared), Ty::Known(found), Some((_, pos))) = (b.declared, ty, &sig.ty)
+            && declared != found
+        {
+            self.errors.push(Diagnostic::error(
+                *pos,
+                format!(
+                    "`{}` holds {}, not {}",
+                    b.name,
+                    found.word(),
+                    declared.word()
+                ),
+            ));
+        }
+        self.types[binding] = b.declared.or(match ty {
+            Ty::Known(found) => Some(found),
+            _ => None,
+        });
+    }
+
+    /// What an expression's cells hold. A lambda's parameters have the types its signature
+    /// gives them.
+    fn ty(&self, expr: &Expr, params: &BTreeMap<String, CellType>) -> Result<Ty, Diagnostic> {
+        let number = |ty: Ty, what: &str| -> Result<(), Diagnostic> {
+            match ty {
+                Ty::Known(CellType::Text) => Err(Diagnostic::error(
+                    expr.pos,
+                    format!("{what} works on numbers, and this is Text; text is joined with `++`"),
+                )),
+                _ => Ok(()),
+            }
+        };
+        Ok(match &expr.kind {
+            ExprKind::Number { .. } => Ty::Known(CellType::Number),
+            ExprKind::Str(_) => Ty::Known(CellType::Text),
+            ExprKind::Bool(_) => Ty::Known(CellType::Logical),
+            ExprKind::Text(_)
+            | ExprKind::Constructor(_)
+            | ExprKind::Record(_)
+            | ExprKind::Update { .. } => Ty::Any,
+            ExprKind::Name(name) => match params.get(name) {
+                Some(ty) => Ty::Known(*ty),
+                None => match self.model.symbols.get(name) {
+                    Some(Symbol::Binding(binding)) => {
+                        self.types[*binding].map_or(Ty::Any, Ty::Known)
+                    }
+                    Some(Symbol::Size(_)) => Ty::Known(CellType::Number),
+                    // A function of no arguments: `na`, an error, which goes with anything.
+                    None => Ty::Never,
+                },
+            },
+            ExprKind::Neg(operand) => {
+                number(self.ty(operand, params)?, "negation")?;
+                Ty::Known(CellType::Number)
+            }
+            ExprKind::Binary { op, left, right } => {
+                let (left, right) = (self.ty(left, params)?, self.ty(right, params)?);
+                match op {
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow => {
+                        let what = format!("`{}`", op.symbol());
+                        number(left, &what)?;
+                        number(right, &what)?;
+                        Ty::Known(CellType::Number)
+                    }
+                    BinOp::Concat => Ty::Known(CellType::Text),
+                    _ => Ty::Known(CellType::Logical),
+                }
+            }
+            ExprKind::If { cond, then, other } => {
+                self.ty(cond, params)?;
+                join(self.ty(then, params)?, self.ty(other, params)?)
+            }
+            ExprKind::List(rows) => {
+                let mut ty = Ty::Never;
+                for value in rows.iter().flatten() {
+                    ty = join(ty, self.ty(value, params)?);
+                }
+                ty
+            }
+            ExprKind::Range { .. } => Ty::Known(CellType::Number),
+            ExprKind::Apply {
+                func, args, seed, ..
+            } => {
+                let mut types = Vec::with_capacity(args.len());
+                for arg in args {
+                    types.push(self.ty(arg, params)?);
+                }
+                let seed = match seed {
+                    Some(seed) => self.ty(seed, params)?,
+                    None => Ty::Never,
+                };
+                match Builtin::lookup(&func.name) {
+                    Some(Builtin::Lag) => join(types[1], seed),
+                    Some(Builtin::Tail | Builtin::Init | Builtin::Transpose) => types[0],
+                    Some(Builtin::Not) => Ty::Known(CellType::Logical),
+                    Some(Builtin::Lookup) => types[2],
+                    Some(Builtin::Column) => self.column_type(&args[0], &args[1]),
+                    Some(Builtin::Csv) => Ty::Any,
+                    Some(Builtin::Na) => Ty::Never,
+                    Some(_) => Ty::Known(CellType::Number),
+                    None => {
+                        let Some(Symbol::Binding(binding)) = self.model.symbols.get(&func.name)
+                        else {
+                            unreachable!("Resolve checks lambda names");
+                        };
+                        let lambda = &self.model.bindings[*binding];
+                        for ((arg, ty), (param, wanted)) in args
+                            .iter()
+                            .zip(&types)
+                            .zip(lambda.params.iter().zip(&lambda.function))
+                        {
+                            if let Ty::Known(found) = ty
+                                && found != wanted
+                            {
+                                return Err(Diagnostic::error(
+                                    arg.pos,
+                                    format!(
+                                        "`{}` takes {} for `{param}`, and this is {}",
+                                        func.name,
+                                        wanted.word(),
+                                        found.word()
+                                    ),
+                                ));
+                            }
+                        }
+                        Ty::Known(
+                            *lambda
+                                .function
+                                .last()
+                                .expect("a lambda's type has a result"),
+                        )
+                    }
+                }
+            }
+        })
+    }
+
+    /// What the cells of a table's column hold, where they all hold the same.
+    fn column_type(&self, name: &Expr, table: &Expr) -> Ty {
+        let (ExprKind::Str(name), ExprKind::Name(table)) = (&name.kind, &table.kind) else {
+            return Ty::Any;
+        };
+        let Some(Symbol::Binding(binding)) = self.model.symbols.get(table) else {
+            return Ty::Any;
+        };
+        let Some(table) = self.model.tables.get(binding) else {
+            return Ty::Any;
+        };
+        let Some(index) = table.header.iter().position(|column| column == name) else {
+            return Ty::Any;
+        };
+        table.rows.iter().fold(Ty::Never, |ty, row| {
+            let field = match &row[index] {
+                Field::Empty => Ty::Never,
+                Field::Number(_) => Ty::Known(CellType::Number),
+                Field::Bool(_) => Ty::Known(CellType::Logical),
+                Field::Text(_) => Ty::Known(CellType::Text),
+            };
+            join(ty, field)
+        })
+    }
+
     fn finish(mut self) -> Result<Typed, Vec<Diagnostic>> {
         if self.errors.is_empty() {
             for var in &self.vars {
@@ -815,7 +1173,7 @@ impl Infer<'_> {
                         var.pos,
                         format!(
                             "nothing has the size `{name}`: name it in the signature of a range \
-                             made with `..`, such as `period : [1, {name}]`"
+                             made with `..`, such as `year : Formula Number _ [1, {name}] …`"
                         ),
                     ));
                 }
@@ -878,8 +1236,11 @@ impl Infer<'_> {
         Ok(Typed {
             vars,
             shapes,
-            rows: self.rows,
+            types: self.types,
+            along: self.along,
             drivers: self.drivers,
+            carried: self.carried,
+            axes: self.axes,
         })
     }
 }
@@ -888,15 +1249,15 @@ fn count(n: usize) -> i64 {
     i64::try_from(n).expect("a list in a file has fewer than 2^63 values")
 }
 
-/// How many periods a `lag` moves: a whole number, at least 1, written in the file.
-fn periods(arg: &Expr, what: &str) -> Result<i64, Option<Diagnostic>> {
+/// How many positions a `lag` moves: a whole number, at least 1, written in the file.
+fn steps(arg: &Expr, what: &str) -> Result<i64, Option<Diagnostic>> {
     match arg.integer() {
-        Some(periods) if periods >= 1 => Ok(periods),
+        Some(steps) if steps >= 1 => Ok(steps),
         _ => Err(fail(
             arg.pos,
             format!(
-                "`{what}` takes a whole number of periods written in the file, such as `{what} 1 \
-                 revenue`"
+                "`{what}` takes a whole number of positions written in the file, such as `{what} \
+                 1 revenue`"
             ),
         )),
     }
@@ -915,23 +1276,34 @@ mod tests {
     use crate::parser::parse;
     use crate::resolve::resolve;
 
-    fn typed(source: &str) -> Result<(Model, Typed), Vec<String>> {
-        let program = parse(source).expect("parses");
+    /// A workbook of one sheet, `main`, for the bindings in `body`, which start on line 6.
+    fn file(body: &str) -> String {
+        format!(
+            "yup 0.2\nworkbook : Workbook\nworkbook = {{ sheets = [main] }}\nmain : Sheet\nmain = \
+             {{ name = 'Main' }}\n{body}"
+        )
+    }
+
+    fn typed(body: &str) -> Result<(Model, Typed), Vec<String>> {
+        let program = parse(&file(body)).expect("parses");
         let model = resolve(&program, &crate::Inputs::new()).expect("resolves");
         infer(&program, &model)
             .map(|typed| (model, typed))
             .map_err(|errors| errors.iter().map(ToString::to_string).collect())
     }
 
-    fn shapes(source: &str) -> Vec<String> {
-        let (model, typed) = typed(source).expect("infers");
+    fn shapes(body: &str) -> Vec<String> {
+        let (model, typed) = typed(body).expect("infers");
         model
             .bindings
             .iter()
             .zip(&typed.shapes)
+            .filter(|(binding, _)| {
+                matches!(binding.role, Role::Formula | Role::Value | Role::Local)
+            })
             .map(|(binding, shape)| {
                 format!(
-                    "{} [{}, {}] from [{}, {}]",
+                    "{} [{}, {}] start [{}, {}]",
                     binding.name,
                     typed.format(&shape.rows.size),
                     typed.format(&shape.columns.size),
@@ -942,97 +1314,148 @@ mod tests {
             .collect()
     }
 
-    const FORECAST: &str = "yup 0.1\nhorizon : 'Horizon' Input\nhorizon = 5\nperiod : \
-                            'Period'\nperiod = 1 .. horizon\nrevenue = 100 * 1.1 ^ period\n";
+    const FORECAST: &str = "horizon : Value Number _ at main D2\nhorizon = 5\nperiod : Local\nperiod \
+                            = 1 .. horizon\nrevenue : Local\nrevenue = 100 * 1.1 ^ period\n";
 
     #[test]
     fn spans_follow_lag_tail_and_init() {
-        let source =
-            format!("{FORECAST}growth = tail revenue / lag 1 revenue - 1\nfirst = init revenue\n");
+        let source = format!(
+            "{FORECAST}growth : Local\ngrowth = tail revenue / lag 1 revenue - 1\nfirst : \
+             Local\nfirst = init revenue\ncol : Local\ncol = tail (transpose revenue)\n"
+        );
         assert_eq!(
             shapes(&source),
             [
-                "horizon [1, 1] from [0, 0]",
-                "period [1, period_n] from [0, 0]",
-                "revenue [1, period_n] from [0, 0]",
-                "growth [1, period_n - 1] from [0, 1]",
-                "first [1, period_n - 1] from [0, 0]",
+                "horizon [1, 1] start [0, 0]",
+                "period [1, period_n] start [0, 0]",
+                "revenue [1, period_n] start [0, 0]",
+                "growth [1, period_n - 1] start [0, 1]",
+                "first [1, period_n - 1] start [0, 0]",
+                "col [period_n - 1, 1] start [1, 0]",
             ]
         );
     }
 
     #[test]
+    fn a_range_of_rows_and_columns_says_which_way_it_lags() {
+        let grid = "grid : Local\ngrid = [1, 2; 3, 4]\n";
+        assert_eq!(
+            typed(&format!("{grid}x : Local\nx = tail grid\n")).expect_err("no direction"),
+            [
+                "9:5: error: `tail` works across or down, and this range has more than one row \
+                 and column: say which, as in `tail across x`"
+            ]
+        );
+        assert_eq!(
+            shapes(&format!("{grid}x : Local\nx = lag down 1 grid\n"))[1],
+            "x [1, 2] start [1, 0]"
+        );
+    }
+
+    #[test]
     fn misaligned_ranges_do_not_combine() {
-        let source = format!("{FORECAST}growth = tail revenue / init revenue\n");
+        let source = format!("{FORECAST}growth : Local\ngrowth = tail revenue / init revenue\n");
         assert_eq!(
             typed(&source).expect_err("misaligned"),
             [
-                "7:23: error: the two sides of `/` are misaligned along the columns: one covers \
-              positions [1, period_n) and the other [0, period_n - 1); `lag` shifts a range \
-              along, and `tail` and `init` drop its ends"
+                "13:23: error: the two sides of `/` are misaligned along the columns: one covers \
+                 positions [1, period_n) and the other [0, period_n - 1); `lag` shifts a range \
+                 along, and `tail` and `init` drop its ends"
             ]
         );
     }
 
     #[test]
     fn every_range_made_with_dots_has_its_own_size() {
-        let source = format!("{FORECAST}other = 1 .. horizon\ntotal = period + other\n");
+        let source = format!(
+            "{FORECAST}other : Local\nother = 1 .. horizon\ntotal : Local\ntotal = period + \
+             other\n"
+        );
         assert_eq!(
             typed(&source).expect_err("two sizes"),
             [
-                "8:16: error: the two sides of `+` have different numbers of columns: period_n and \
-              other_n"
+                "15:16: error: the two sides of `+` have different numbers of columns: period_n \
+                 and other_n"
             ]
         );
     }
 
     #[test]
     fn a_signature_names_a_size_and_is_checked() {
-        let named = "yup 0.1\nn : Size Unknown\nh = 5\np : [1, n] 'P'\np = 1 .. h\nq : [1, n - \
-                     1]\nq = tail p\n";
+        let named = "n : Size Unknown\nh : Local\nh = 5\np : Local [1, n]\np = 1 .. h\nq : Local \
+                     [1, n - 1]\nq = tail p\n";
         assert_eq!(
             shapes(named),
             [
-                "h [1, 1] from [0, 0]",
-                "p [1, n] from [0, 0]",
-                "q [1, n - 1] from [0, 1]"
+                "h [1, 1] start [0, 0]",
+                "p [1, n] start [0, 0]",
+                "q [1, n - 1] start [0, 1]"
             ]
         );
-        let wrong = "yup 0.1\nn : Size Unknown\nh = 5\np : [1, n] 'P'\np = 1 .. h\nq : [1, n]\nq \
-                     = tail p\n";
+        let wrong = "n : Size Unknown\nh : Local\nh = 5\np : Local [1, n]\np = 1 .. h\nq : Local \
+                     [1, n]\nq = tail p\n";
         assert_eq!(
             typed(wrong).expect_err("wrong size"),
-            ["6:9: error: `q` has n - 1 columns, not n"]
-        );
-        let again = "yup 0.1\nn : Size Unknown\nh = 5\np : [1, n] 'P'\np = 1 .. h\nq : [1, n]\nq \
-                     = 1 .. h\n";
-        assert_eq!(
-            typed(again).expect_err("named twice"),
-            [
-                "6:9: error: `n` already names the size introduced at 5:7; every `..` introduces a \
-              new size, so make `q` from the range that has that size"
-            ]
+            ["11:15: error: `q` has n - 1 columns, not n"]
         );
     }
 
     #[test]
     fn fixed_sizes_compare_by_value() {
-        let source = "yup 0.1\ns : Size Fixed\ns = 3\nsegment : [1, 3]\nsegment = 1 .. s\nbase = \
-                      [100; 200; 300]\nyear = 1 .. 5\ngrid = base * 1.1 ^ year\n";
+        let source = "s : Size Fixed\ns = 3\nsegment : Local [1, 3]\nsegment = 1 .. s\nbase : \
+                      Local\nbase = [100; 200; 300]\nyear : Local\nyear = 1 .. 5\ngrid : \
+                      Local\ngrid = base * 1.1 ^ year\n";
         assert_eq!(
             shapes(source),
             [
-                "segment [1, 3] from [0, 0]",
-                "base [3, 1] from [0, 0]",
-                "year [1, 5] from [0, 0]",
-                "grid [3, 5] from [0, 0]",
+                "segment [1, 3] start [0, 0]",
+                "base [3, 1] start [0, 0]",
+                "year [1, 5] start [0, 0]",
+                "grid [3, 5] start [0, 0]",
             ]
         );
     }
 
     #[test]
     fn a_seed_fills_the_first_position() {
-        let source = format!("{FORECAST}opening = lag 1 revenue from 100\n");
-        assert_eq!(shapes(&source)[3], "opening [1, period_n] from [0, 0]");
+        let source = format!("{FORECAST}opening : Local\nopening = lag 1 revenue seed 100\n");
+        assert_eq!(shapes(&source)[3], "opening [1, period_n] start [0, 0]");
+    }
+
+    #[test]
+    fn cell_types_are_worked_out_and_checked() {
+        let (model, found) = typed(
+            "a : Local\na = 1 .. 3\nb : Local\nb = a > 1\nt : Local\nt = \"x\" ++ \"y\"\nd : \
+             Local\nd = if b then 1 else na\n",
+        )
+        .expect("infers");
+        let types: Vec<Option<CellType>> = model
+            .bindings
+            .iter()
+            .zip(&found.types)
+            .filter(|(binding, _)| binding.role == Role::Local)
+            .map(|(_, ty)| *ty)
+            .collect();
+        assert_eq!(
+            types,
+            [
+                Some(CellType::Number),
+                Some(CellType::Logical),
+                Some(CellType::Text),
+                Some(CellType::Number)
+            ]
+        );
+        assert_eq!(
+            typed(
+                "a : Local Text\na = 1\nb : Local\nb = \"x\" + 1\nf : Lambda Number -> \
+                 Number\nf x = x\nt : Local\nt = f \"y\"\n"
+            )
+            .expect_err("wrong types"),
+            [
+                "6:11: error: `a` holds Number, not Text",
+                "9:9: error: `+` works on numbers, and this is Text; text is joined with `++`",
+                "13:7: error: `f` takes Number for `x`, and this is Text",
+            ]
+        );
     }
 }

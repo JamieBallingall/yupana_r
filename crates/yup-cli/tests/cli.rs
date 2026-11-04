@@ -27,17 +27,19 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).replace("\r\n", "\n")
 }
 
-const SOURCE: &str = "yup 0.1\nrate : 'Rate' Input\nrate = 0.05\nyears = 1 .. 3\ngrowth : \
-                      'Growth'\ngrowth = (1 + rate) ^ years\n";
+const SOURCE: &str = "yup 0.2\nworkbook : Workbook\nworkbook = { sheets = [main] }\nmain : \
+                      Sheet\nmain = { name = 'Main' }\nrate : Value Number _ at main D2\nrate = \
+                      0.05\ngrowth : Formula _ rate down\ngrowth = (1 + rate) ^ (1 .. 3)\n";
 
 #[test]
 fn show_prints_what_a_step_makes_of_the_file() {
-    let output = yup(&["show", "place", "-"], SOURCE.as_bytes());
+    let output = yup(&["show", "ground", "-"], SOURCE.as_bytes());
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert_eq!(
         text(&output.stdout),
-        "yup 0.1\nsheet 'Sheet1'\nrate : [1, 1] 'Rate' @ (2, 4) Input\nrate = 0.05\nyears : [1, \
-         3]\nyears = 1 .. 3\ngrowth : [1, 3] 'Growth' @ (3, 4)\ngrowth = (1 + rate) ^ years\n"
+        "yup 0.2\nworkbook : Workbook\nworkbook = { sheets = [main] }\nmain : Sheet\nmain = { name = \
+         'Main' }\nrate : Value Number _ [1, 1] at main D2\nrate = 0.05\ngrowth : Formula Number _ \
+         [1, 3] at main D3\ngrowth = (1 + rate) ^ (1 .. 3)\n"
     );
 }
 
@@ -66,22 +68,29 @@ fn build_writes_a_workbook_file() {
 
 #[test]
 fn problems_are_reported_with_file_line_and_column() {
-    let output = yup(&["check", "-"], b"yup 0.1\nx = y + 1\nz = 1 ++\n");
+    let output = yup(
+        &["check", "-"],
+        b"yup 0.2\nx : Local\nx = y + 1\nz : Local\nz = 1 ++\n",
+    );
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stderr),
-        "<stdin>:3:9: error: expected a value, found the end of the line\n"
+        "<stdin>:5:9: error: expected a value, found the end of the line\n"
     );
-    let output = yup(&["check", "-"], b"yup 0.1\nx = y + 1\n");
+    let output = yup(
+        &["check", "-"],
+        b"yup 0.2\nworkbook : Workbook\nworkbook = { sheets = [main] }\nmain : Sheet\nmain = { \
+          name = 'Main' }\nx : Local\nx = y + 1\n",
+    );
     assert_eq!(
         text(&output.stderr),
-        "<stdin>:2:5: error: unknown name `y`\n"
+        "<stdin>:7:5: error: unknown name `y`\n"
     );
 }
 
 #[test]
 fn a_file_that_is_not_utf8_is_refused_where_it_goes_wrong() {
-    let output = yup(&["check", "-"], b"yup 0.1\nx = '\xff'\n");
+    let output = yup(&["check", "-"], b"yup 0.2\nx = '\xff'\n");
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stderr),
@@ -119,7 +128,7 @@ fn build_reads_input_files_beside_the_source() {
     assert!(output.status.success(), "{}", text(&output.stderr));
     let output = yup(
         &["check", "-"],
-        b"yup 0.1\nt : 'T' Input\nt = csv \"nowhere.csv\"\n",
+        b"yup 0.2\nt : Value _ at main B2\nt = csv \"nowhere.csv\"\n",
     );
     assert_eq!(output.status.code(), Some(1));
     assert!(

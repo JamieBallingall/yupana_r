@@ -1,38 +1,93 @@
-yup 0.1
+yup 0.2
 
 // Sales history for an invented company, read from history.csv beside this file, and a
-// forecast that starts from its last year. The table is written into the workbook as inputs,
-// under its column names.
+// forecast that starts from its last year. The table is written into the workbook as values,
+// under labels that name its columns.
 
-sheet 'Forecast'
+workbook : Workbook
+workbook = { sheets = [forecast, sales_history] }
 
-growth_rate : 'Growth in units per year' Input Format "0.0%"
+forecast : Sheet
+forecast = { name = 'Forecast' }
+
+sales_history : Sheet
+sales_history = { name = 'Sales history', color = grey }
+
+grey : Style Color
+grey = { red = 128, green = 128, blue = 128 }
+
+label : Style Cell
+label = { format = '@' }
+
+heading : Style Cell
+heading = label { font = { bold = True }, border = { bottom = { weight = Thin } } }
+
+year_style : Style Cell
+year_style = { format = '0' }
+
+units_style : Style Cell
+units_style = { format = '#,##0' }
+
+percent : Style Cell
+percent = { format = '0.0%' }
+
+// Forecast
+
+growth_rate_label : Label label at forecast B2
+growth_rate_label = "Growth in units per year"
+
+growth_rate : Value Number percent growth_rate_label right 2
 growth_rate = 0.05
 
-horizon : 'Forecast horizon (years)' Input
+horizon_label : Label label growth_rate_label down
+horizon_label = "Forecast horizon (years)"
+
+horizon : Value Number _ horizon_label right 2
 horizon = 4
 
-last_year : 'Last year of history'
+last_year_label : Label label horizon_label down
+last_year_label = "Last year of history"
+
+last_year : Formula Number year_style last_year_label right 2
 last_year = maximum (column "year" history)
 
 // A lookup gives one value for each key: here, one key, so one value.
-last_units : 'Units sold in the last year' Format "#,##0"
+last_units_label : Label label last_year_label down
+last_units_label = "Units sold in the last year"
+
+last_units : Formula Number units_style last_units_label right 2
 last_units = lookup last_year (column "year" history) (column "units" history)
 
-gap
-heading 'Forecast'
+forecast_heading : Label heading last_units_label down 2
+forecast_heading = "Forecast"
 
 // One timeline: every row below is made from `step`, so they share its size.
+step : Local
 step = 1 .. horizon
 
-year : 'Year'
+year_label : Label label forecast_heading down
+year_label = "Year"
+
+year : Formula Number year_style year_label right 2
 year = last_year + step
 
-units : 'Units' Format "#,##0"
+units_label : Label label year_label down
+units_label = "Units"
+
+units : Formula Number units_style year down
 units = last_units * (1 + growth_rate) ^ step
 
-sheet 'Sales history'
+// Sales history: the labels name the table's columns, and the table goes below them, with as
+// many rows as the file has, counted when the workbook is written.
 
-// The table takes as many rows as the file has, counted when the workbook is written.
-history : 'Sales' Input
+year_header : Label heading at sales_history B2
+year_header = "Year"
+
+units_header : Label heading year_header right
+units_header = "Units"
+
+price_header : Label heading units_header right
+price_header = "Price"
+
+history : Value _ year_header down
 history = csv "history.csv"

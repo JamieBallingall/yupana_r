@@ -8,19 +8,15 @@
 
 use std::collections::BTreeSet;
 
+use crate::cells::{MAX_COLUMNS, MAX_ROWS, cell_name};
 use crate::diagnostic::{Diagnostic, Pos};
 use crate::ground::Grounded;
 use crate::infer::Typed;
-use crate::resolve::{Model, Role, SheetItem};
+use crate::resolve::Model;
 use crate::size::SizeExpr;
-use crate::syntax::Program;
+use crate::syntax::{Program, Role};
 
-/// The number of rows on a sheet, from the spreadsheet app's published limits.
-pub const MAX_ROWS: i64 = 1_048_576;
-/// The number of columns on a sheet, from the spreadsheet app's published limits.
-pub const MAX_COLUMNS: i64 = 16_384;
-
-/// A warning about a shown binding, which can still be written.
+/// A warning about a binding, which can still be written.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Warning {
     pub binding: usize,
@@ -28,34 +24,19 @@ pub struct Warning {
     pub message: String,
 }
 
-/// The cells one thing covers.
+/// The cells one binding covers.
 struct Rect {
     top: i64,
     left: i64,
     height: SizeExpr,
     width: SizeExpr,
-    what: String,
+    binding: usize,
     pos: Pos,
-    /// The binding the cells belong to; `None` for a heading.
-    binding: Option<usize>,
     /// Whether the cells are a formula's spill rather than written values.
     spills: bool,
 }
 
 impl Rect {
-    fn cell(cell: (i64, i64), what: String, pos: Pos, binding: Option<usize>) -> Rect {
-        Rect {
-            top: cell.0,
-            left: cell.1,
-            height: SizeExpr::constant(1),
-            width: SizeExpr::constant(1),
-            what,
-            pos,
-            binding,
-            spills: false,
-        }
-    }
-
     fn grows(&self) -> bool {
         self.height.any_var(|_| true) || self.width.any_var(|_| true)
     }
@@ -70,7 +51,7 @@ impl Rect {
         )
     }
 
-    fn bounds_error(&self) -> Option<Diagnostic> {
+    fn bounds_error(&self, name: &str) -> Option<Diagnostic> {
         let on_sheet = (1..=MAX_ROWS).contains(&self.top) && (1..=MAX_COLUMNS).contains(&self.left);
         let (_, bottom) = span(self.top, &self.height, false);
         let (_, right) = span(self.left, &self.width, false);
@@ -80,9 +61,9 @@ impl Rect {
         Some(Diagnostic::error(
             self.pos,
             format!(
-                "{} would run off the sheet, whose cells run from (1, 1) to ({MAX_ROWS}, \
-                 {MAX_COLUMNS}); it starts at ({}, {})",
-                self.what, self.top, self.left
+                "`{name}` would run off the sheet, whose cells run from A1 to XFD{MAX_ROWS}; its \
+                 first cell is at row {} and column {}",
+                self.top, self.left
             ),
         ))
     }
@@ -103,6 +84,13 @@ fn meets(a: (i64, i64), b: (i64, i64)) -> bool {
     a.0 < a.1 && b.0 < b.1 && a.0 < b.1 && b.0 < a.1
 }
 
+fn cell(row: i64, column: i64) -> String {
+    match (u32::try_from(row), u32::try_from(column)) {
+        (Ok(row), Ok(column)) => cell_name(row, column),
+        _ => format!("(row {row}, column {column})"),
+    }
+}
+
 /// Checks that nothing collides; returns the warnings about possible spills.
 pub fn check(
     program: &Program,
@@ -112,67 +100,43 @@ pub fn check(
 ) -> Result<Vec<Warning>, Vec<Diagnostic>> {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
-    for sheet in &model.sheets {
-        let mut rects = Vec::new();
-        for item in &sheet.items {
-            match *item {
-                SheetItem::Heading(index) => rects.push(Rect::cell(
-                    grounded.headings[&index],
-                    "a heading".to_string(),
-                    program.items[index].pos,
-                    None,
-                )),
-                SheetItem::Gap(_) => {}
-                SheetItem::Binding(binding) => {
-                    let b = &model.bindings[binding];
-                    let pos =
-                        program.items[b.signature.expect("a shown binding has a signature")].pos;
-                    rects.push(Rect::cell(
-                        grounded.labels[&binding],
-                        format!("the label of `{}`", b.name),
-                        pos,
-                        Some(binding),
-                    ));
-                    let (top, left) = grounded.anchors[&binding];
-                    let shape = &grounded.shapes[binding];
-                    rects.push(Rect {
-                        top,
-                        left,
-                        height: shape.rows.size.clone(),
-                        width: shape.columns.size.clone(),
-                        what: format!("`{}`", b.name),
-                        pos,
-                        binding: Some(binding),
-                        spills: b.role == Role::Shown,
-                    });
-                    if let Some(&(top, left)) = grounded.headers.get(&binding) {
-                        rects.push(Rect {
-                            top,
-                            left,
-                            height: SizeExpr::constant(1),
-                            width: shape.columns.size.clone(),
-                            what: format!("the column names of `{}`", b.name),
-                            pos,
-                            binding: Some(binding),
-                            spills: false,
-                        });
-                    }
+    for sheet in 0..model.sheets.len() {
+        let rects: Vec<Rect> = model
+            .layout
+            .iter()
+            .filter(|&&binding| model.bindings[binding].sheet == Some(sheet))
+            .map(|&binding| {
+                let (top, left) = grounded.anchors[&binding];
+                let shape = &grounded.shapes[binding];
+                Rect {
+                    top,
+                    left,
+                    height: shape.rows.size.clone(),
+                    width: shape.columns.size.clone(),
+                    binding,
+                    pos: model.signature(program, binding).name.pos,
+                    spills: model.bindings[binding].role == Role::Formula,
                 }
-            }
-        }
-        errors.extend(rects.iter().filter_map(Rect::bounds_error));
+            })
+            .collect();
+        let name = |rect: &Rect| model.bindings[rect.binding].name.as_str();
+        errors.extend(
+            rects
+                .iter()
+                .filter_map(|rect| rect.bounds_error(name(rect))),
+        );
         let mut warned = BTreeSet::new();
         for (i, a) in rects.iter().enumerate() {
             for b in &rects[i + 1..] {
                 if a.overlaps(b, false) {
+                    let (first, second) = if a.pos <= b.pos { (a, b) } else { (b, a) };
                     errors.push(Diagnostic::error(
-                        b.pos,
+                        second.pos,
                         format!(
-                            "{} and {} would share the cell ({}, {})",
-                            a.what,
-                            b.what,
-                            a.top.max(b.top),
-                            a.left.max(b.left)
+                            "`{}` and `{}` would share the cell {}",
+                            name(first),
+                            name(second),
+                            cell(a.top.max(b.top), a.left.max(b.left))
                         ),
                     ));
                 } else if a.overlaps(b, true) {
@@ -181,10 +145,7 @@ pub fn check(
                     } else {
                         (b, a)
                     };
-                    let binding = spilling.binding.expect("what grows is a binding's range");
-                    // A range that spills into a label usually spills into its values too; one
-                    // warning names both.
-                    if !warned.insert((binding, other.binding)) {
+                    if !warned.insert((spilling.binding, other.binding)) {
                         continue;
                     }
                     let mut sizes: Vec<&str> = [&spilling.height, &spilling.width]
@@ -193,17 +154,14 @@ pub fn check(
                         .collect();
                     sizes.sort_unstable();
                     sizes.dedup();
-                    let other = match other.binding {
-                        Some(other) => format!("`{}`", model.bindings[other].name),
-                        None => "a heading".to_string(),
-                    };
                     warnings.push(Warning {
-                        binding,
+                        binding: spilling.binding,
                         pos: spilling.pos,
                         message: format!(
-                            "{} spills into {other} once {} grows large enough; the workbook \
-                             would show #SPILL!",
-                            spilling.what,
+                            "`{}` spills into `{}` once {} grows large enough; the workbook would \
+                             show #SPILL!",
+                            name(spilling),
+                            name(other),
                             sizes.join(" or ")
                         ),
                     });

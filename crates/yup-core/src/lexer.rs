@@ -1,7 +1,10 @@
 //! Splits a `.yup` source into tokens.
 //!
-//! The lexer counts brackets so that a newline inside `(` or `[` does not end a statement. That
-//! lets a long expression run over several lines without an offside rule.
+//! The lexer counts brackets so that a newline inside `(`, `[` or `{` does not end a statement.
+//! That lets a long expression run over several lines without an offside rule. A line whose
+//! first token is `{` continues the statement above it, so that a record can start on the line
+//! after the name it updates: no statement starts with `{`, so the rule changes the meaning of
+//! nothing that would otherwise be valid.
 
 use crate::diagnostic::{Diagnostic, Pos};
 
@@ -10,14 +13,16 @@ use crate::diagnostic::{Diagnostic, Pos};
 pub enum Token {
     /// A name that starts with a lower-case letter: a binding, a function or a keyword.
     Name(String),
-    /// A word that starts with an upper-case letter, used at the type level (`Input`, `Size`).
+    /// A word that starts with an upper-case letter: a role, a type or a constructor (`Formula`,
+    /// `Number`, `Thin`), or a cell in A1 notation (`B2`).
     Word(String),
     /// A number in JSON's grammar, without a sign. The text is kept so that a printed file
     /// shows the number as it was written.
     Number(f64, String),
     /// A string value, in double quotes, with its escapes decoded.
     Str(String),
-    /// A label or a sheet name, in single quotes, with doubled quotes decoded.
+    /// A setting in single quotes, such as a sheet name or a format code, with doubled quotes
+    /// decoded.
     Text(String),
     /// A comment, without its `//`.
     Comment(String),
@@ -27,11 +32,15 @@ pub enum Token {
     RParen,
     LBracket,
     RBracket,
+    LBrace,
+    RBrace,
     Comma,
     Semicolon,
     Colon,
     Equals,
-    At,
+    /// `_`, which stands for a default.
+    Underscore,
+    Arrow,
     Plus,
     PlusPlus,
     AndAnd,
@@ -57,7 +66,7 @@ impl Token {
             Token::Name(name) | Token::Word(name) => return format!("`{name}`"),
             Token::Number(_, text) => return format!("the number `{text}`"),
             Token::Str(_) => return "a string".to_string(),
-            Token::Text(_) => return "a quoted label".to_string(),
+            Token::Text(_) => return "text in single quotes".to_string(),
             Token::Comment(_) => return "a comment".to_string(),
             Token::Newline => return "the end of the line".to_string(),
             Token::Eof => return "the end of the file".to_string(),
@@ -65,11 +74,14 @@ impl Token {
             Token::RParen => ")",
             Token::LBracket => "[",
             Token::RBracket => "]",
+            Token::LBrace => "{",
+            Token::RBrace => "}",
             Token::Comma => ",",
             Token::Semicolon => ";",
             Token::Colon => ":",
             Token::Equals => "=",
-            Token::At => "@",
+            Token::Underscore => "_",
+            Token::Arrow => "->",
             Token::Plus => "+",
             Token::PlusPlus => "++",
             Token::AndAnd => "&&",
@@ -174,7 +186,16 @@ impl Lexer {
                 '\n' => {
                     self.bump();
                     if self.open.is_empty() {
-                        self.push(Token::Newline, pos);
+                        if self.continues() {
+                            // A comment before the continuation is inside the statement now,
+                            // where the syntax tree has no place for it.
+                            if matches!(self.out.last(), Some(l) if matches!(l.token, Token::Comment(_)))
+                            {
+                                self.out.pop();
+                            }
+                        } else {
+                            self.push(Token::Newline, pos);
+                        }
                     }
                 }
                 '/' if self.peek_second() == Some('/') => self.comment(pos),
@@ -197,6 +218,14 @@ impl Lexer {
         }
         self.push(Token::Eof, pos);
         Ok(self.out)
+    }
+
+    /// Whether the next line's first token is `{`, which continues the statement on this line.
+    fn continues(&self) -> bool {
+        self.chars[self.next..]
+            .iter()
+            .find(|c| !matches!(c, ' ' | '\t' | '\r'))
+            == Some(&'{')
     }
 
     fn comment(&mut self, pos: Pos) {
@@ -226,6 +255,10 @@ impl Lexer {
             }
             self.bump();
             text.push(c);
+        }
+        if text == "_" {
+            self.push(Token::Underscore, pos);
+            return Ok(());
         }
         if text.starts_with('_') {
             return Err(Diagnostic::error(
@@ -403,7 +436,7 @@ impl Lexer {
             let here = self.pos();
             match self.bump() {
                 None | Some('\n') => {
-                    return Err(Diagnostic::error(pos, "this label has no closing `'`"));
+                    return Err(Diagnostic::error(pos, "this text has no closing `'`"));
                 }
                 Some('\'') if self.peek() == Some('\'') => {
                     self.bump();
@@ -433,10 +466,19 @@ impl Lexer {
             ',' => Token::Comma,
             ';' => Token::Semicolon,
             ':' => Token::Colon,
-            '@' => Token::At,
+            '{' => Token::LBrace,
+            '}' => Token::RBrace,
             '*' => Token::Star,
             '^' => Token::Caret,
+            '-' if next == Some('>') => two(Token::Arrow),
             '-' => Token::Minus,
+            '@' => {
+                return Err(Diagnostic::error(
+                    pos,
+                    "`@` means nothing in .yup; a binding is placed at a cell with `at`, as in \
+                     `at forecast B2`",
+                ));
+            }
             '+' if next == Some('+') => two(Token::PlusPlus),
             '+' => Token::Plus,
             '/' if next == Some('=') => two(Token::NotEq),
@@ -485,16 +527,10 @@ impl Lexer {
             '|' => {
                 return Err(Diagnostic::error(pos, "a single `|`; logical or is `||`"));
             }
-            '{' | '}' => {
-                return Err(Diagnostic::error(
-                    pos,
-                    "a list of values is written with `[` and `]`, rows separated by `;`",
-                ));
-            }
             c if c.is_alphabetic() => {
                 return Err(Diagnostic::error(
                     pos,
-                    format!("`{c}`: names are ASCII; any character can go in a quoted label"),
+                    format!("`{c}`: names are ASCII; any character can go in quoted text"),
                 ));
             }
             c => {
@@ -505,9 +541,13 @@ impl Lexer {
             }
         };
         match token {
-            Token::LParen | Token::LBracket => self.open.push((c, pos)),
-            Token::RParen | Token::RBracket => {
-                let opening = if c == ')' { '(' } else { '[' };
+            Token::LParen | Token::LBracket | Token::LBrace => self.open.push((c, pos)),
+            Token::RParen | Token::RBracket | Token::RBrace => {
+                let opening = match c {
+                    ')' => '(',
+                    ']' => '[',
+                    _ => '{',
+                };
                 match self.open.pop() {
                     Some((open, _)) if open == opening => {}
                     Some((open, at)) => {
@@ -563,7 +603,7 @@ mod tests {
 
     #[test]
     fn positions_count_lines_and_characters() {
-        let lexed = lex("yup 0.1\nlabel : 'Café' Input").expect("lexes");
+        let lexed = lex("yup 0.2\nlabel : 'Café' Value").expect("lexes");
         let positions: Vec<String> = lexed.iter().map(|l| l.pos.to_string()).collect();
         assert_eq!(
             positions,
@@ -615,7 +655,7 @@ mod tests {
             Token::Text("Prior year's revenue".to_string())
         );
         assert_eq!(tokens(r#""😀""#)[0], Token::Str("😀".to_string()));
-        assert_eq!(error("'open"), "1:1: error: this label has no closing `'`");
+        assert_eq!(error("'open"), "1:1: error: this text has no closing `'`");
         assert_eq!(
             error(r#""\u0007""#),
             "1:2: error: the character U+0007 cannot be written to a workbook"

@@ -1,27 +1,25 @@
-//! Step 4, Place: where each item goes on its sheet, as `(row, column)`, both counted from 1.
+//! Step 4, Place: where each binding's cells go on its sheet, as `(row, column)`, both counted
+//! from 1.
 //!
-//! Layout follows the order of the file: each item goes below the one before. Position 0 of a
-//! range's columns lands in column 4, and the range's label two columns to the left of that,
-//! leaving an empty column between label and values. A range's anchor is the top-left cell of
-//! its values, not its label.
+//! A binding is placed at a cell, or beside another binding. Each move counts in cells from the
+//! reference's cell on the side it heads toward: `right` from its east column, `left` from its
+//! west, `down` from its south row and `up` from its north; `from` names another side. A move
+//! right or down lands the binding's own first column or row there, and a move left or up its
+//! last, so that the binding sits beside the reference rather than over it. Along an axis with no
+//! move, the binding lines up with the reference's first column or row.
 //!
-//! An anchor may depend on fixed sizes but never on unknown ones, so nothing goes below a range
-//! whose height is unknown unless it is pinned with `@`.
+//! A cell may depend on fixed sizes but never on unknown ones, so counting from the far side of
+//! a range of unknown extent is refused.
 
 use std::collections::BTreeMap;
 
+use crate::cells::column_name;
+use crate::check::Warning;
 use crate::diagnostic::{Diagnostic, Pos};
-use crate::infer::{Typed, VarKind};
-use crate::resolve::{Model, SheetItem, Symbol};
+use crate::infer::{Extent, Typed, VarKind};
+use crate::resolve::{Model, Place};
 use crate::size::SizeExpr;
-use crate::syntax::{Coord, ItemKind, Program, SizeSyntax};
-
-/// The row of the first item on a sheet. Row 1 is left empty as a margin.
-pub const FIRST_ROW: i64 = 2;
-/// The column where position 0 of a range's columns lands: column D.
-pub const VALUE_COLUMN: i64 = 4;
-/// How many columns to the left of position 0 a label goes: column B, leaving column C empty.
-pub const LABEL_OFFSET: i64 = 2;
+use crate::syntax::{Direction, Move, Program, Side};
 
 /// A cell whose row and column may depend on fixed sizes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,112 +28,104 @@ pub struct At {
     pub column: SizeExpr,
 }
 
-/// Where every heading, label and range goes.
+/// Where every binding with cells goes: the top-left cell of its values.
 #[derive(Clone, Debug, Default)]
 pub struct Placed {
-    /// Each heading's cell, by the heading's item index.
-    pub headings: BTreeMap<usize, At>,
-    /// Each shown binding's anchor: the top-left cell of its values.
     pub anchors: BTreeMap<usize, At>,
-    /// Each shown binding's label cell.
-    pub labels: BTreeMap<usize, At>,
-    /// Each table's first column name, in the row above its values.
-    pub headers: BTreeMap<usize, At>,
+    /// Placements that do not line up ranges that share a size.
+    pub warnings: Vec<Warning>,
 }
 
-/// The next free row, or the binding of unknown height that nothing can go below.
-enum Cursor {
-    Row(SizeExpr),
-    Below(usize),
+/// One axis of a sheet, as a placement sees it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Line {
+    Rows,
+    Columns,
 }
 
-/// Places every item of every sheet.
+impl Line {
+    fn of(direction: Direction) -> Line {
+        if direction.is_horizontal() {
+            Line::Columns
+        } else {
+            Line::Rows
+        }
+    }
+
+    /// The side a move counts from when it says none: the side it heads toward.
+    fn default_side(direction: Direction) -> Side {
+        match direction {
+            Direction::Right => Side::East,
+            Direction::Left => Side::West,
+            Direction::Down => Side::South,
+            Direction::Up => Side::North,
+        }
+    }
+
+    fn extent(self, shape: &crate::infer::Shape) -> &Extent {
+        match self {
+            Line::Rows => &shape.rows,
+            Line::Columns => &shape.columns,
+        }
+    }
+
+    fn of_at(self, at: &At) -> &SizeExpr {
+        match self {
+            Line::Rows => &at.row,
+            Line::Columns => &at.column,
+        }
+    }
+
+    fn noun(self) -> (&'static str, &'static str) {
+        match self {
+            Line::Rows => ("height", "rows"),
+            Line::Columns => ("width", "columns"),
+        }
+    }
+}
+
+/// Places every binding with cells.
 pub fn place(program: &Program, model: &Model, typed: &Typed) -> Result<Placed, Vec<Diagnostic>> {
     let mut placed = Placed::default();
     let mut errors = Vec::new();
-    for sheet in &model.sheets {
-        let mut cursor = Cursor::Row(SizeExpr::constant(FIRST_ROW));
-        for item in &sheet.items {
-            match *item {
-                SheetItem::Heading(index) => {
-                    let ItemKind::Heading { at, .. } = &program.items[index].kind else {
-                        unreachable!("a heading index points at a heading");
-                    };
-                    let pos = program.items[index].pos;
-                    let cell = match at {
-                        Some(at) => pin(at, model, typed),
-                        None => {
-                            next_row(&cursor, model, typed, "this heading", pos).map(|row| At {
-                                row,
-                                column: SizeExpr::constant(VALUE_COLUMN - LABEL_OFFSET),
-                            })
-                        }
-                    };
-                    match cell {
-                        Ok(cell) => {
-                            cursor = Cursor::Row(cell.row.offset(1));
-                            placed.headings.insert(index, cell);
-                        }
-                        Err(error) => errors.push(error),
-                    }
-                }
-                SheetItem::Gap(_) => {
-                    if let Cursor::Row(row) = &cursor {
-                        cursor = Cursor::Row(row.offset(1));
-                    }
-                }
-                SheetItem::Binding(binding) => {
-                    let sig = model
-                        .signature(program, binding)
-                        .expect("a shown binding has a signature");
-                    let shape = &typed.shapes[binding];
-                    // A table takes a row of column names above its values.
-                    let header = i64::from(model.tables.contains_key(&binding));
-                    let anchor = match &sig.at {
-                        Some(at) => pin(at, model, typed),
-                        None => {
-                            let what = format!("`{}`", sig.name.name);
-                            next_row(&cursor, model, typed, &what, sig.name.pos).map(|row| At {
-                                row: row.offset(shape.rows.start + header),
-                                column: SizeExpr::constant(VALUE_COLUMN + shape.columns.start),
-                            })
-                        }
-                    };
-                    let anchor = match anchor {
-                        Ok(anchor) => anchor,
+    for &binding in &model.layout {
+        let pos = model.signature(program, binding).name.pos;
+        let at = match &model.bindings[binding].place {
+            Some(Place::At { row, column, .. }) => At {
+                row: SizeExpr::constant(*row),
+                column: SizeExpr::constant(*column),
+            },
+            Some(Place::Beside { reference, moves }) => {
+                let Some(base) = placed.anchors.get(reference).cloned() else {
+                    // The reference could not be placed, and has been reported.
+                    continue;
+                };
+                let mut at = base.clone();
+                let mut failed = false;
+                for line in [Line::Rows, Line::Columns] {
+                    let step = moves.iter().find(|step| Line::of(step.direction) == line);
+                    match beside(model, typed, binding, *reference, &base, line, step) {
+                        Ok(value) => match line {
+                            Line::Rows => at.row = value,
+                            Line::Columns => at.column = value,
+                        },
                         Err(error) => {
                             errors.push(error);
-                            continue;
+                            failed = true;
                         }
-                    };
-                    // A table's label goes beside its column names, in the row above its values.
-                    let label = At {
-                        row: anchor.row.offset(-header),
-                        column: anchor.column.offset(-(shape.columns.start + LABEL_OFFSET)),
-                    };
-                    if header == 1 {
-                        placed.headers.insert(
-                            binding,
-                            At {
-                                row: anchor.row.offset(-1),
-                                column: anchor.column.clone(),
-                            },
-                        );
                     }
-                    let unknown_height = shape
-                        .rows
-                        .size
-                        .any_var(|var| typed.vars[var].kind == VarKind::Unknown);
-                    cursor = if unknown_height {
-                        Cursor::Below(binding)
-                    } else {
-                        Cursor::Row(anchor.row.plus(&shape.rows.size))
-                    };
-                    placed.anchors.insert(binding, anchor);
-                    placed.labels.insert(binding, label);
                 }
+                if failed {
+                    continue;
+                }
+                placed.warnings.extend(misaligned(
+                    model, typed, binding, *reference, &at, &base, moves, pos,
+                ));
+                at
             }
-        }
+            None => unreachable!("Resolve gives every binding with cells a place"),
+        };
+        placed.anchors.insert(binding, at);
     }
     if errors.is_empty() {
         Ok(placed)
@@ -144,61 +134,160 @@ pub fn place(program: &Program, model: &Model, typed: &Typed) -> Result<Placed, 
     }
 }
 
-fn next_row(
-    cursor: &Cursor,
+/// Whether a size is known when the file is written.
+fn known(typed: &Typed, size: &SizeExpr) -> bool {
+    !size.any_var(|var| typed.vars[var].kind == VarKind::Unknown)
+}
+
+/// Where a binding placed beside `reference` goes along one axis.
+fn beside(
     model: &Model,
     typed: &Typed,
-    what: &str,
-    pos: Pos,
+    binding: usize,
+    reference: usize,
+    base: &At,
+    line: Line,
+    step: Option<&Move>,
 ) -> Result<SizeExpr, Diagnostic> {
-    match cursor {
-        Cursor::Row(row) => Ok(row.clone()),
-        Cursor::Below(binding) => {
-            let name = &model.bindings[*binding].name;
-            Err(Diagnostic::error(
-                pos,
-                format!(
-                    "{what} would go below `{name}`, whose height, {}, is unknown when the file \
-                     is written; move it above `{name}`, onto another sheet, or pin it with `@`",
-                    typed.format(&typed.shapes[*binding].rows.size)
-                ),
-            ))
-        }
+    let start = line.of_at(base).clone();
+    let Some(step) = step else {
+        return Ok(start);
+    };
+    let name = &model.bindings[binding].name;
+    let other = &model.bindings[reference].name;
+    let side = step.from.unwrap_or(Line::default_side(step.direction));
+    if side.is_column() != (line == Line::Columns) {
+        let sides = match line {
+            Line::Rows => "north or south",
+            Line::Columns => "east or west",
+        };
+        return Err(Diagnostic::error(
+            step.pos,
+            format!(
+                "a move {} counts from the {sides} side",
+                step.direction.word()
+            ),
+        ));
     }
-}
-
-/// The cell a `@ (row, column)` names.
-fn pin(at: &Coord, model: &Model, typed: &Typed) -> Result<At, Diagnostic> {
-    Ok(At {
-        row: fixed_size(&at.row, model, typed)?,
-        column: fixed_size(&at.column, model, typed)?,
-    })
-}
-
-fn fixed_size(syntax: &SizeSyntax, model: &Model, typed: &Typed) -> Result<SizeExpr, Diagnostic> {
-    let mut terms = Vec::new();
-    for (coefficient, ident) in &syntax.terms {
-        match model.symbols.get(&ident.name) {
-            Some(Symbol::Size(var)) if typed.fixed(*var).is_some() => {
-                terms.push((*var, *coefficient));
-            }
-            Some(Symbol::Size(_)) => {
+    let (noun, _) = line.noun();
+    let extent = &line.extent(&typed.shapes[reference]).size;
+    let from = if matches!(side, Side::East | Side::South) {
+        if !known(typed, extent) {
+            let near = match line {
+                Line::Rows => "north",
+                Line::Columns => "west",
+            };
+            return Err(Diagnostic::error(
+                step.pos,
+                format!(
+                    "`{name}` counts from the {} side of `{other}`, whose {noun}, {}, is unknown \
+                     when the file is written; count from its {near} side, with `from {near}`, or \
+                     place `{name}` elsewhere",
+                    side.word(),
+                    typed.format(extent)
+                ),
+            ));
+        }
+        start.plus(extent).offset(-1)
+    } else {
+        start
+    };
+    let distance = step.distance();
+    match step.direction {
+        Direction::Right | Direction::Down => Ok(from.offset(distance)),
+        Direction::Left | Direction::Up => {
+            // The binding's own last cell lands at the count, so its own extent must be known.
+            let own = &line.extent(&typed.shapes[binding]).size;
+            if !known(typed, own) {
                 return Err(Diagnostic::error(
-                    ident.pos,
+                    step.pos,
                     format!(
-                        "a cell cannot depend on `{}`, which is unknown until the workbook \
-                         calculates",
-                        ident.name
+                        "`{name}` is placed {} of `{other}`, so its own {noun}, {}, must be known \
+                         when the file is written",
+                        step.direction.word(),
+                        typed.format(own)
                     ),
                 ));
             }
-            _ => {
-                return Err(Diagnostic::error(
-                    ident.pos,
-                    format!("`{}` is not a fixed size", ident.name),
-                ));
-            }
+            Ok(from.offset(1 - distance).minus(own))
         }
     }
-    Ok(SizeExpr::from_parts(syntax.constant, terms))
+}
+
+/// A warning for each axis along which `binding` and `reference` share a size but are placed so
+/// that their positions do not line up. A move that steps off the reference along an axis puts
+/// the two side by side there, so only an axis with no move, or with a move that counts from the
+/// reference's own first column or row, is checked.
+#[allow(clippy::too_many_arguments)]
+fn misaligned(
+    model: &Model,
+    typed: &Typed,
+    binding: usize,
+    reference: usize,
+    at: &At,
+    base: &At,
+    moves: &[Move],
+    pos: Pos,
+) -> Vec<Warning> {
+    let mut warnings = Vec::new();
+    for line in [Line::Rows, Line::Columns] {
+        let stepped_off = moves.iter().any(|step| {
+            Line::of(step.direction) == line
+                && step
+                    .from
+                    .is_none_or(|side| side == Line::default_side(step.direction))
+        });
+        if stepped_off {
+            continue;
+        }
+        let own = line.extent(&typed.shapes[binding]);
+        let theirs = line.extent(&typed.shapes[reference]);
+        let shared: Vec<usize> = own
+            .size
+            .terms()
+            .map(|(var, _)| var)
+            .filter(|&var| theirs.size.any_var(|other| other == var))
+            .collect();
+        let Some(&var) = shared.first() else {
+            continue;
+        };
+        let value = |size: &SizeExpr| size.substitute(|var| typed.fixed(var)).as_constant();
+        // Position 0 of each range, where it would be.
+        let (Some(own_zero), Some(their_zero)) = (
+            value(&line.of_at(at).offset(-own.start)),
+            value(&line.of_at(base).offset(-theirs.start)),
+        ) else {
+            continue;
+        };
+        if own_zero == their_zero {
+            continue;
+        }
+        let first = own.start.max(theirs.start);
+        let (_, dimension) = line.noun();
+        let show = |n: i64| match line {
+            Line::Rows => format!("row {n}"),
+            Line::Columns => {
+                format!(
+                    "column {}",
+                    column_name(u32::try_from(n.max(1)).unwrap_or(1))
+                )
+            }
+        };
+        warnings.push(Warning {
+            binding,
+            pos,
+            message: format!(
+                "`{}` does not line up with `{}`: the two share {} along their {dimension}, but \
+                 position {first} of `{}` is in {} and of `{}` in {}",
+                model.bindings[binding].name,
+                model.bindings[reference].name,
+                typed.vars[var].name,
+                model.bindings[binding].name,
+                show(own_zero + first),
+                model.bindings[reference].name,
+                show(their_zero + first),
+            ),
+        });
+    }
+    warnings
 }

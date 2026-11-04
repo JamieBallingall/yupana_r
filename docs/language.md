@@ -1,4 +1,4 @@
-# The `.yup` language, version 0.1
+# The `.yup` language, version 0.2
 
 This is a reference for the language as the tool implements it. It is provisional: the README
 records why each choice was made and what is still open. Everything here is illustrated in
@@ -7,144 +7,155 @@ records why each choice was made and what is still open. Everything here is illu
 ## A file
 
 ```text
-yup 0.1
+yup 0.2
 
 // A comment runs from // to the end of the line.
 
-sheet 'Inputs'
+workbook : Workbook
+workbook = { sheets = [forecast] }
 
-horizon : 'Forecast horizon (years)' Input
+forecast : Sheet
+forecast = { name = 'Forecast' }
+
+label : Style Cell
+label = { format = '@' }
+
+horizon_label : Label label at forecast B2
+horizon_label = "Forecast horizon (years)"
+
+horizon : Value Number _ horizon_label right 2
 horizon = 5
 
-sheet 'Forecast'
+year_label : Label label horizon_label down 2
+year_label = "Year"
 
-year : 'Year'
+year : Formula Number _ year_label right 2
 year = 1 .. horizon
 ```
 
-- The first line is `yup 0.1`. A reader refuses any other version.
-- One statement per line. Inside `(` or `[`, a newline does not end the statement, so a long
-  expression can run over several lines.
+- The first line is `yup 0.2`. A reader refuses any other version.
+- A file is a list of bindings. Each is a signature, `name : …`, and directly below it, with
+  only comments between, its definition, `name = …`. The name is written on both lines.
+- The bindings can come in any order: neither what they mean nor where they go depends on it.
+- One statement per line. Inside `(`, `[` or `{`, a newline does not end the statement, so a
+  long expression can run over several lines. A line whose first token is `{` continues the
+  statement above it, so a record can start on the line after its name or its `=`.
 - Files are UTF-8. Line endings may be LF or CRLF.
 
-## Statements
+## Roles
 
-| Statement | Meaning |
-|---|---|
-| `sheet 'Name'` | What follows goes on this sheet; the tabs come in this order. |
-| `heading 'Text'` | A bold line of text in the layout. |
-| `gap` | An empty row in the layout. |
-| `n : Size Unknown` | Declares a size decided in the workbook. |
-| `s : Size Fixed` with `s = 4` | Declares a size known when the file is written. |
-| `name : …` | A signature: the label, size, place and look of a binding. |
-| `name = expression` | A definition. |
-| `name a b = expression` | A function of `a` and `b`. |
+A signature starts with the binding's role, which says what the binding becomes.
 
-Items written before any `sheet` statement go on a sheet called `Sheet1`.
-
-A sheet name follows the spreadsheet app's rules: 1 to 31 characters, none of `: \ / ? * [ ]`, not
-starting or ending with `'`, not `History`, and unique ignoring case.
-
-## Bindings
-
-A binding is a name with a definition. What its signature says decides what it becomes:
-
-| Signature | Role | In the workbook |
+| Role | In the workbook | Formulas may use it |
 |---|---|---|
-| has a label and `Input` | input | its values, in cells the reader can change, in blue |
-| has a label | shown | one formula in its anchor cell, spilling as far as it needs |
-| no label, or none at all | local | nothing: its formula goes into the formulas using it |
-| none, and has parameters | function | a defined name holding a LAMBDA |
-
-Every shown binding and input becomes a workbook-scoped defined name, and formulas in the workbook
-refer to them by those names.
-
-Names are lower case ASCII: a letter, then letters, digits and `_`. Every name follows the rules
-for defined names, so that showing a binding never forces a rename. A name cannot read as a cell
-(`tax2026`) or as R1C1 notation (`r`, `c`, `r1c1`), and cannot be the name of a built-in function
-or a keyword (`if`, `then`, `else`, `from`, `sheet`, `heading`, `gap`, `yup`, `true`, `false`).
-
-An input's definition is written out in the file: a number, a string, `true`, `false`, or a list
-of these. Or it is read from a CSV file beside the `.yup` file, as a table:
-
-```text
-history : 'Sales' Input
-history = csv "history.csv"
-
-last_units = lookup 2025 (column "year" history) (column "units" history)
-```
-
-- The file's first row names its columns, and every other row is a record with one field for
-  each column. Fields are separated by commas; a field in double quotes can hold commas, line
-  breaks and doubled quotes.
-- An unquoted field is typed: empty is blank, a number in JSON's grammar is a number, `TRUE` and
-  `FALSE` in any case are logicals, and anything else is text. A quoted field is always text.
-- The table's size is counted when the workbook is written: as many rows as the file has records,
-  and as many columns as it has names. It is written into the workbook as input cells, under a row
-  of its column names, with its label beside them.
-- `column "units" history` is one column of the table, written `INDEX(history,0,2)`.
-
-## Functions
-
-```text
-discount rate years = 1 / (1 + rate) ^ years
-
-discount_factor : 'Discount factor'
-discount_factor = discount discount_rate year
-```
-
-A definition with parameters is a function. It has no cells and no signature: each call has the
-size its arguments give it, worked out where the call is made. Inside the body, a parameter hides
-any binding of the same name, and only the function's own parameters are visible. A function can
-call other functions, but not itself.
-
-In the workbook a function is a defined name holding a LAMBDA, so it can be called there too, and
-a call is written as the app writes one: `discount(discount_rate,year)`.
-
-## Balances carried from one period to the next
-
-```text
-opening : 'Opening balance'
-opening = lag 1 closing from amount
-
-repayment : 'Repayment'
-repayment = min scheduled opening
-
-closing : 'Closing balance'
-closing = opening - repayment
-```
-
-Bindings may use each other in a cycle when `lag 1 x from first` breaks it: each period then
-depends only on the period before, and the first period on `first`. The binding that is lagged,
-`closing` here, is the balance the cycle carries. In 0.1:
-
-- a cycle carries one balance, in one row;
-- inside the cycle, `lag` is always `lag 1 balance from first`, with the same `first` throughout;
-- what takes part in the cycle works position by position: operators, `if`, `min`, `max`, `abs`,
-  `exp`, `ln`, `sqrt`, `round` and `not`, but not `sum`, `tail` or a function of the file's own;
-- the cycle uses a row from outside it, such as `scheduled` above, which gives its length;
-- a range made with `..` is not inside the cycle.
-
-In the workbook the balance is a SCAN over the periods. Its step works out one period from the
-balance a period back, with the rest of the cycle written in place; the other members of the
-cycle are ordinary formulas that use the balance. The workbook holds no circular reference.
+| `Formula` | a dynamic array formula, and a defined name | yes |
+| `Value` | a value, or a table read from a CSV file, and a defined name | yes |
+| `Label` | a text cell | no |
+| `Local` | nothing of its own: its formula is written into those that use it | yes |
+| `Lambda` | a defined name holding a LAMBDA | yes, by calling it |
+| `Style` | the look of the cells whose signatures name it | no |
+| `Size` | nothing: a size the checker tracks | in sizes |
+| `Sheet` | a worksheet | no |
+| `Workbook` | the workbook's settings: exactly one per file | no |
 
 ## Signatures
 
-A signature takes any of these parts, in any order:
+A signature's parts come in this order:
 
-| Part | Example | Meaning |
+| Part | Example | Which roles |
 |---|---|---|
-| label | `'Revenue growth'` | The text beside the values. Any Unicode; a quote inside is doubled. |
-| size | `[1, n - 1]` | Rows and columns. Checked against what the definition gives. |
-| start | `from [0, 1]` | Where the range starts along its rows and columns. Checked. |
-| anchor | `@ (4, 5)` | Pins the top-left cell of the values, as `(row, column)` counted from 1. |
-| `Input` | | The values are written into cells for the reader to change. |
-| `Format "…"` | `Format "0.0%"` | A number format. Literal text goes in double quotes inside it. |
-| `Bold`, `Italic` | | The label and the values are bold or italic. |
+| role | `Formula` | all |
+| type | `Number`, `Number -> Number`, `Cell` | see below |
+| style | `money`, or `_` for the default | `Formula`, `Value`, `Label`: required |
+| size | `[1, n - 1]` | `Formula`, `Value`, `Label`, `Local`: optional, checked |
+| start | `start [0, 1]` | `Formula`, `Value`, `Label`, `Local`: optional, checked |
+| place | `at forecast B2`, `revenue down 2` | `Formula`, `Value`, `Label`: required |
 
-Sizes and anchors are written as a whole number plus size variables with positive coefficients:
-`n`, `n - 1`, `2 * s + 4`.
+The type of a cell is `Number`, `Text` or `Logical`, the kinds of value the spreadsheet app's TYPE
+function tells apart. It is optional, and checked, for `Formula`, `Value` and `Local`, and not
+written for `Label`, which always holds text, or for `Sheet` and `Workbook`. A `Lambda` has a
+type that names its parameters and its result, `Number -> Number -> Number`, and a `Style` names
+the kind of record it is: `Cell`, `Font`, `Border`, `Edge`, `Alignment` or `Color`.
+
+A size is `Size Fixed`, with a definition, `s = 4`, or `Size Unknown`, which stands alone: the
+workbook decides its value.
+
+```text
+segments : Size Fixed
+segments = 3
+
+n : Size Unknown
+year : Formula Number _ [1, n] year_label right 2
+year = 1 .. horizon
+```
+
+## Values, labels, formulas and locals
+
+- A **value** is one number, string, `True` or `False`, written in the file. Many values belong
+  in an input file: `history = csv "history.csv"` reads a CSV file beside the `.yup` file into a
+  table of values.
+- A **label** is its text, in double quotes: `year_label = "Year"`. Formulas cannot use it.
+- A **formula** is an expression, written into the workbook as one dynamic array formula.
+- A **local** is an expression with no cells of its own. A formula that uses it has it written
+  in place.
+
+An error, such as `#N/A`, is not a type: any formula may give one, and `na` gives `#N/A`.
+
+A CSV file's first row names its columns, and every other row is a record with one field for
+each column. Fields are separated by commas; a field in double quotes can hold commas, line
+breaks and doubled quotes. An unquoted field is typed: empty is blank, a number in JSON's
+grammar is a number, `TRUE` and `FALSE` in any case are logicals, and anything else is text. A
+quoted field is always text. The table takes as many rows as the file has records, counted when
+the workbook is written, and only its values are written: labels name its columns.
+
+`column "units" history` is one column of a table.
+
+## Lambdas
+
+```text
+discount : Lambda Number -> Number -> Number
+discount rate years = 1 / (1 + rate) ^ years
+
+discount_factor : Formula Number factor factor_label right 2
+discount_factor = discount discount_rate year
+```
+
+A lambda has no cells. Each call has the size its arguments give it, worked out where the call
+is made, and every call gives every argument. Inside the body, a parameter hides any binding of
+the same name. In the workbook a lambda is a defined name holding a LAMBDA, so it can be called
+there too, and a call is written as the app writes one: `discount(discount_rate,year)`.
+
+Inside a lambda, `lag`, `tail` and `init` say which way they work, `across` or `down`: the
+lambda is written once, however it is called.
+
+## Values carried from one position to the next
+
+```text
+opening : Formula Number money opening_label right 2
+opening = lag 1 closing seed amount
+
+repayment : Formula Number money opening down
+repayment = min scheduled opening
+
+closing : Formula Number total repayment down
+closing = opening - repayment
+```
+
+Bindings may use each other in a cycle when `lag 1 x seed first` breaks it: each position then
+depends only on the position before, and the first on `first`. The binding that is lagged,
+`closing` here, is the value the cycle carries. In 0.2:
+
+- a cycle carries one value, in one row or one column;
+- inside the cycle, `lag` is always `lag 1 value seed first`, with the same `first` throughout;
+- what takes part in the cycle works position by position: operators, `if`, `min`, `max`, `abs`,
+  `exp`, `ln`, `sqrt`, `round` and `not`, but not `sum`, `tail` or a lambda;
+- the cycle uses a row or a column from outside it, such as `scheduled` above, which gives its
+  length;
+- a range made with `..` is not inside the cycle.
+
+In the workbook the carried value is a SCAN over the positions. Its step works out one position
+from the value a position back, with the rest of the cycle written in place; the other members
+of the cycle are ordinary formulas that use it. The workbook holds no circular reference.
 
 ## Expressions
 
@@ -152,14 +163,14 @@ Sizes and anchors are written as a whole number plus size variables with positiv
 |---|---|
 | numbers, in JSON's grammar | `12`, `0.05`, `1.5e3` |
 | strings, in double quotes | `"Retail"`, with escapes `\"`, `\\`, `\/`, `\n`, `\t`, `\uXXXX` |
-| logicals | `true`, `false` |
-| lists of literals | `[1, 2, 3]` is a row; `[1; 2; 3]` is a column; `[1, 2; 3, 4]` a grid |
-| whole numbers from a to b | `1 .. horizon` |
+| logicals | `True`, `False` |
+| lists of literals, in formulas | `[1, 2, 3]`, a row; `[1; 2; 3]`, a column; `[1, 2; 3, 4]` |
+| whole numbers from a to b | `1 .. horizon`, a row; `transpose (1 .. horizon)`, a column |
 | conditions | `if a > b then a else b` |
-| function application | `lag 1 revenue`, `round 2 x` |
+| function application | `lag 1 revenue`, `round 2 x`, `tail down x` |
 
 A string in a formula has at most 255 characters, the spreadsheet app's limit; a longer text can
-be an input.
+be a value.
 
 Operators, from loosest to tightest:
 
@@ -177,7 +188,11 @@ Operators, from loosest to tightest:
 | function application | left |
 
 So `-2 ^ 2` is -4, and `tail revenue / lag 1 revenue - 1` is `((tail revenue) / (lag 1
-revenue)) - 1`.
+revenue)) - 1`. Arithmetic on text is an error; text is joined with `++`.
+
+The spreadsheet app's habits are refused with a hint: `discount(rate, years)` takes its
+arguments without parentheses or commas, `SUM(x)` is `sum x`, `B2` is a cell where a formula
+names bindings, and `true` is `True`.
 
 ## Built-in functions
 
@@ -185,10 +200,10 @@ Arguments that say how much come first, and the data last.
 
 | Function | Result | Written as |
 |---|---|---|
-| `lag k x` | x moved k columns along, so k columns shorter | `DROP(x,,-k)` |
-| `lag 1 x from v` | x moved one column along, with v first | `HSTACK(v,DROP(x,,-1))` |
-| `tail x` | x without its first column, so starting one later | `DROP(x,,1)` |
-| `init x` | x without its last column | `DROP(x,,-1)` |
+| `lag k x` | x moved k positions along, so k shorter | `DROP(x,,-k)` |
+| `lag 1 x seed v` | x moved one position along, with v first | `HSTACK(v,DROP(x,,-1))` |
+| `tail x` | x without its first position, so starting one later | `DROP(x,,1)` |
+| `init x` | x without its last position | `DROP(x,,-1)` |
 | `sum x`, `average x` | one value from all of x | `SUM(x)`, `AVERAGE(x)` |
 | `minimum x`, `maximum x` | one value from all of x | `MIN(x)`, `MAX(x)` |
 | `sum_columns x` | the sum of each column, as one row | `BYCOL(x,LAMBDA(x,SUM(x)))` |
@@ -200,14 +215,18 @@ Arguments that say how much come first, and the data last.
 | `transpose x` | rows and columns swapped | `TRANSPOSE(x)` |
 | `lookup k ks vs` | the value beside each key, shaped as `k` | `XLOOKUP(k,ks,vs)` |
 | `column "c" t` | the column called `c` of the table `t` | `INDEX(t,0,j)` |
-| `csv "file.csv"` | a table read from a file, as the whole of an input's definition | its cells |
+| `na` | the error `#N/A` | `NA()` |
+| `csv "file.csv"` | a table read from a file, as the whole of a value's definition | its cells |
+
+`lag`, `tail` and `init` work along a range's one dimension when it has only one: across a row,
+from column to column, or down a column, from row to row, where they are written `DROP(x,-k)`
+and so on, and a seed is stacked with `VSTACK`. A range of more than one row and column needs
+the direction written straight after the function's name: `tail across grid`, `lag down 1 grid`.
 
 `min` and `max` work position by position, like Haskell's; `minimum` and `maximum` reduce a range
-to one value.
-
-`&&` and `||` work position by position too. The app's AND and OR reduce a range to one value,
-so they are written with arithmetic on the logicals: `a && b` as `(a)*(b)<>0`, and `a || b` as
-`(a)+(b)<>0`.
+to one value. `&&` and `||` work position by position too. The app's AND and OR reduce a range
+to one value, so they are written with arithmetic on the logicals: `a && b` as `(a)*(b)<>0`, and
+`a || b` as `(a)+(b)<>0`.
 
 ## Sizes and spans
 
@@ -216,10 +235,10 @@ Every expression has a size in rows and columns, and a span: where it sits along
 - A number, string or logical is one cell.
 - `a .. b` is one row. If `b` is a whole number or a fixed size, its length is known. Otherwise
   it introduces a new unknown size, decided in the workbook. Two ranges made by two `..` have
-  different sizes, even if they look the same: make every range on a timeline from one
-  `..`.
-- A signature can name an unknown size: `year : [1, n] 'Year'` with `n : Size Unknown`. The name
-  is checked, and each declared size names exactly one `..`.
+  different sizes, even if they look the same: make every range on a timeline from one `..`.
+- A signature can name an unknown size: `year : Formula Number _ [1, n] …` with
+  `n : Size Unknown`. The name is checked, and each declared size names exactly one `..`. An
+  unknown size no signature names is called after the binding that made it, such as `year_n`.
 - Operators and functions that work position by position need operands of the same size and
   span. A dimension of size 1 stretches to match the other operand, as in the spreadsheet app, so
   a column of segments times a row of years is a grid.
@@ -228,45 +247,140 @@ Every expression has a size in rows and columns, and a span: where it sits along
 
 ## Layout
 
-Each sheet is laid out in the order of the file. Row 1 is left empty, the first item goes in
-row 2, and each item goes below the one before:
+Each formula, value and label says where its cells go, in its signature. The top-left cell of
+its values is its anchor.
 
-- a heading takes a row, its text in column B;
-- a gap takes a row;
-- a shown binding or input takes as many rows as it has, its label in column B and position 0 of
-  its columns in column D, leaving column C empty. A range that starts later (`from [0, 1]`)
-  starts that many columns further right, so the years line up.
+- `at forecast B2` puts the anchor at a cell of a sheet, in A1 notation. Each sheet has at least
+  one binding placed this way.
+- `revenue_label right 2` puts it beside another binding. A move is `left`, `right`, `up` or
+  `down`, with a distance that defaults to 1, and a placement has at most one move along each
+  axis, in either order.
+- Each move counts in cells from the reference's cell on the side it heads toward: `right` from
+  its east column, `left` from its west, `down` from its south row and `up` from its north.
+  `from east`, `from west`, `from north` or `from south` after a move counts from that side
+  instead. A move right or down lands the binding's own first column or row there; a move left
+  or up lands its last.
+- Along an axis with no move, the binding lines up with the reference's west column or north
+  row.
 
-An anchor may depend on fixed sizes but not on unknown ones, so nothing can be placed below a
-range of unknown height unless it is pinned with `@`. Anything pinned is placed where it says,
-and the items after it follow below it.
+So, with `revenue` a row at D8, `revenue_label right 2` from a one-cell label at B8 is D8, and
+`revenue down 1 right 1 from west` is E9: one row below `revenue` and one column in from its
+first.
 
-Check refuses two things that would share a cell, and warns when a range would spill into
-something once an unknown size grows: the workbook would show `#SPILL!` there.
+Counting from the east or south side of a range needs its extent when the file is written, so
+counting past a range of unknown width or height is refused. A binding placed left of or above
+another needs its own extent known too.
+
+The sheet a binding is on is the sheet of the cell its placements lead back to. Placements that
+go round in a circle are refused.
+
+Check refuses two bindings that would share a cell, and warns when a range would spill into
+something once an unknown size grows: the workbook would show `#SPILL!` there. It also warns
+when two ranges placed one from the other share a size along an axis but do not line up along
+it, position by position, unless the placement steps off the reference along that axis.
+
+## Styles
+
+A style is a binding whose role is `Style` and whose definition is a record of its type:
+
+```text
+light_grey : Style Color
+light_grey = { red = 200, green = 200, blue = 200 }
+
+money : Style Cell
+money = { format = '#,##0' }
+
+grand_total : Style Cell
+grand_total = money
+  { font   = { bold = True }
+  , border = { top = { weight = Thin }, bottom = { weight = Double, color = light_grey } }
+  }
+```
+
+The types of style, and their fields:
+
+- `Cell`: `format` (a format code), `font` (a `Font`), `fill` (a `Color`), `border` (a `Border`)
+  and `align` (an `Alignment`).
+- `Font`: `name` (`'Arial'`), `size` (in points), `bold` and `italic` (`True` or `False`), and
+  `color` (a `Color`).
+- `Border`: `top`, `bottom`, `left` and `right`, each an `Edge`.
+- `Edge`: `weight` (`Thin`, `Medium`, `Thick`, `Double`, `Hair`, `Dotted` or `Dashed`) and
+  `color` (a `Color`).
+- `Alignment`: `horizontal` (`Left`, `Center`, `Right` or `Justify`), `vertical` (`Top`,
+  `Center` or `Bottom`), `wrap` (`True` or `False`) and `indent` (a whole number).
+- `Color`: `red`, `green` and `blue`, each a whole number from 0 to 255.
+
+- Every field is optional; a field left out takes the app's default, and a color component
+  left out is 0.
+- A record has a comma between each pair of fields, a field at most once, and only the fields
+  of its type. A field's value is a record, or a style of the field's type by name.
+- `base { … }` builds a style on another. It merges field by field at every depth and only
+  adds: setting a field that the base has already set, at any depth, is an error.
+- A formula, value or label names a style of type `Cell`, or `_` for the default.
+- A format code is checked conservatively: literal text in it goes in double quotes, and the
+  format for text is `'@'`.
+
+## Sheets and the workbook
+
+```text
+workbook : Workbook
+workbook = { sheets = [inputs, forecast], style = narrow }
+
+forecast : Sheet
+forecast = { name = 'Forecast', color = red, hidden = False, style = big }
+```
+
+- The workbook lists every sheet once, in the order of the tabs, and at least one sheet is not
+  hidden. There is no default sheet.
+- A sheet's name follows the spreadsheet app's rules: 1 to 31 characters, none of
+  `: \ / ? * [ ]`, not starting or ending with `'`, not `History`, and unique ignoring case.
+- `color` is the color of the sheet's tab.
+- The style of a sheet or of the workbook sets only the font's name and size. A cell's style
+  that leaves either out takes it from its sheet's style, then from the workbook's, then from
+  the app's default.
+
+## Case and quotes
+
+- Lower case is for every name the author makes (bindings, parameters, styles, sizes), for record
+  fields and for keywords. Names are ASCII: a letter, then letters, digits and `_`.
+- Upper case is for the language's own words: roles, types and constructors, such as `Formula`,
+  `Number`, `Thin` and `True`.
+- Every name follows the rules for defined names, so that exporting a binding never forces a
+  rename. A name cannot read as a cell (`tax2026`) or as R1C1 notation (`r`, `c`, `r1c1`), and
+  cannot be the name of a built-in function or a keyword: `across`, `at`, `down`, `east`,
+  `else`, `from`, `if`, `left`, `north`, `right`, `seed`, `south`, `start`, `then`, `up`,
+  `west` or `yup`.
+- Single quotes hold settings: sheet names, format codes and font names. A quote inside is
+  doubled: `'Year''s end'`. Double quotes hold data: the text of a label or a value, and strings
+  in formulas.
 
 ## The steps, and what `yup show` prints
 
 | Step | `yup show <step>` prints |
 |---|---|
 | parse | the file, formatted |
-| resolve | the same, with the default sheet written out |
-| infer | the same, with each binding's size and span, and the unknown sizes declared |
-| place | the same, with every anchor, in `(row, column)` that may depend on fixed sizes |
-| ground | the same, with fixed sizes replaced by their values |
+| resolve | the same |
+| infer | the same, with each binding's type, size and span, and the unknown sizes declared |
+| place | the same as infer: a place that depends on a fixed size has no A1 form |
+| ground | the same, with every place a cell and fixed sizes replaced by their values |
 | check | the same, with any warnings as comments |
 | lower | the cells and defined names, in A1 notation |
 | package | the parts of the xlsx file |
 
 Every step up to Check prints a valid `.yup` file, and running the same step on what it printed
-changes nothing.
+changes nothing. What Ground prints is fully elaborated: nothing is left to work out but what the
+workbook decides.
 
 ## The workbook
 
-- Each shown binding is one dynamic array formula in its anchor cell; the cells it spills into
-  are filled by the spreadsheet app when it calculates. The file caches no values and asks to be
+- Each formula is one dynamic array formula in its anchor cell; the cells it spills into are
+  filled by the spreadsheet app when it calculates. The file caches no values and asks to be
   calculated in full when it opens.
-- Each input is written cell by cell, in blue.
-- Each shown binding and input is a defined name. A spilled range's name covers the whole spill,
-  which the app shows as `D4#`.
-- A number format applies to the anchor and to the rows the range spills along.
+- Each value is written cell by cell.
+- Each formula and value is a defined name. A spilled range's name covers the whole spill, which
+  the app shows as `D4#`.
+- The cells a formula spills into take its style. Where the extent is known, they are written as
+  empty cells with that style. Where it is not, the style goes on the whole row or column the
+  range grows along, and the cells before the range on it keep the default.
+- A column that nothing is in, before the last column that something is in, is narrow.
 - The same file always gives the same bytes.

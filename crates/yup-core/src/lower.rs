@@ -1,18 +1,24 @@
 //! Step 7, Lower: from ranges to cells, and from `.yup` expressions to the spreadsheet app's
 //! formulas. This is the only step that writes A1 references.
 //!
-//! A range that spills becomes one dynamic array formula in its anchor cell; the cells it spills
-//! into are left empty for the spreadsheet app to fill when it calculates. An input becomes one
-//! value per cell, and every label a text cell.
+//! A formula becomes one dynamic array formula in its anchor cell; the cells it spills into are
+//! left for the spreadsheet app to fill when it calculates. A value becomes one value per cell,
+//! and a label a text cell.
 //!
-//! Every shown binding becomes a workbook-scoped defined name, and formulas refer to shown
-//! bindings by those names. The name of a spilled range refers to the whole spill, which the
-//! file writes as `_xlfn.ANCHORARRAY` of the anchor cell; the app shows it as `D3#`. A local
-//! binding has no name: its formula is written into each formula that uses it.
+//! Every formula and value becomes a workbook-scoped defined name, and formulas refer to them by
+//! those names. The name of a spilled range refers to the whole spill, which the file writes as
+//! `_xlfn.ANCHORARRAY` of the anchor cell; the app shows it as `D3#`. A local has no name: its
+//! formula is written into each formula that uses it.
 //!
 //! An expression whose span is `[a, b)` lowers to a formula whose result has `b - a` positions,
 //! the first of them position `a`. That is what keeps `lag`, `tail` and `init` aligned: each is a
 //! DROP of the positions that fall away.
+//!
+//! The cells a formula spills into are not in the file, so they cannot carry a style of their
+//! own. Where the extent is known, the file holds them as empty cells with the formula's style.
+//! Where it is not, the style goes on the whole row or column the range grows along, and the
+//! cells before the range on that row or column are written with the default style, so that the
+//! style covers the range and what lies beyond it only.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -22,14 +28,14 @@ use crate::diagnostic::{Diagnostic, Pos};
 use crate::functions::Builtin;
 use crate::ground::{Cell as At, Grounded};
 use crate::infer::Typed;
-use crate::place::{LABEL_OFFSET, VALUE_COLUMN};
-use crate::resolve::{Binding, Model, Recurrence, Role, SheetItem, Symbol};
-use crate::syntax::{BinOp, Expr, ExprKind, ItemKind, Program};
+use crate::resolve::{Binding, Model, Recurrence, Symbol};
+use crate::style::{CellStyle, Font, Rgb};
+use crate::syntax::{Axis, BinOp, Expr, ExprKind, Program, Role};
 
 /// Names for the LET variables and LAMBDA parameters that the tool writes itself. Each starts
 /// with `_`, which no `.yup` name can, so none hides a binding of the file's that the formula
 /// around it refers to.
-const TOOL_NAMES: [&str; 5] = ["_x", "_a", "_b", "_balance", "_period"];
+const TOOL_NAMES: [&str; 5] = ["_x", "_a", "_b", "_value", "_position"];
 
 /// The longest formula the spreadsheet app takes, from its published limits.
 const MAX_FORMULA: usize = 8_192;
@@ -37,6 +43,8 @@ const MAX_FORMULA: usize = 8_192;
 const MAX_NESTING: u32 = 64;
 /// The longest string a formula can hold, from the spreadsheet app's published limits.
 const MAX_FORMULA_STRING: usize = 255;
+/// The width of a column that nothing is in, before the last column that something is in.
+const GAP_WIDTH: f64 = 2.7;
 
 /// A workbook as cells, ready to be packaged.
 #[derive(Clone, Debug, PartialEq)]
@@ -44,17 +52,23 @@ pub struct Workbook {
     pub sheets: Vec<SheetCells>,
     pub names: Vec<DefinedName>,
     /// The styles cells refer to by index; index 0 is the default.
-    pub styles: Vec<Style>,
+    pub styles: Vec<CellStyle>,
+    /// The workbook's default font, with its name and size filled in.
+    pub font: Font,
 }
 
-/// One sheet's cells, by `(row, column)`, its row styles and its column widths.
+/// One sheet's cells, by `(row, column)`, its settings, and the styles and widths of its rows
+/// and columns.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SheetCells {
     pub name: String,
+    pub color: Option<Rgb>,
+    pub hidden: bool,
     pub cells: BTreeMap<(u32, u32), Cell>,
-    /// The style of each row a formula with a style spills along. The cells a formula spills
-    /// into are not in the file, so they take the style of their row.
+    /// The style of each row that a formula of unknown width spills along.
     pub row_styles: BTreeMap<u32, usize>,
+    /// The style of each column that a formula of unknown height spills down.
+    pub column_styles: BTreeMap<u32, usize>,
     pub widths: BTreeMap<u32, f64>,
 }
 
@@ -71,6 +85,8 @@ pub enum Value {
     Bool(bool),
     /// A dynamic array formula, without its `=`.
     Formula(String),
+    /// Nothing but a style: a cell a formula spills into.
+    Empty,
 }
 
 /// A workbook-scoped defined name and the formula it refers to.
@@ -80,17 +96,11 @@ pub struct DefinedName {
     pub refers_to: String,
 }
 
-/// How a cell looks.
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Style {
-    /// A number format, such as `0.0%`.
-    pub format: Option<String>,
-    pub bold: bool,
-    pub italic: bool,
-    /// Inputs are blue, as is usual in financial models, so that the cells a reader may change
-    /// stand out.
-    pub input: bool,
-}
+/// The typeface of the default font. A reader without it substitutes another; the standard's
+/// own examples use the same one.
+pub const DEFAULT_FONT: &str = "Calibri";
+/// The size of the default font, in points, as in the standard's own examples.
+pub const DEFAULT_SIZE: f64 = 11.0;
 
 /// How tightly a formula binds, in the spreadsheet app's precedence: comparison, `&`, `+` and
 /// `-`, `*` and `/`, `^`, then negation, which binds tighter than `^` there.
@@ -187,7 +197,7 @@ fn to_u32(n: i64) -> u32 {
 }
 
 fn to_i64(n: usize) -> i64 {
-    i64::try_from(n).expect("a list in a file has fewer than 2^63 values")
+    i64::try_from(n).expect("a table in a file has fewer than 2^63 values")
 }
 
 fn put(cells: &mut Cells, (row, column): At, value: Value, style: usize) {
@@ -198,22 +208,33 @@ fn put(cells: &mut Cells, (row, column): At, value: Value, style: usize) {
 /// What the names in an expression refer to while it is lowered.
 #[derive(Clone, Copy)]
 struct Scope<'a> {
-    /// The parameters of the function whose body this is; the file writes them `_xlpm.name`.
+    /// The parameters of the lambda whose body this is; the file writes them `_xlpm.name`.
     params: &'a [String],
-    /// The recurrence one period of which this is, if any.
-    period: Option<&'a Period>,
+    /// The recurrence one position of which this is, if any.
+    position: Option<&'a Position>,
 }
 
 /// The whole workbook's scope: no parameters, and not inside a recurrence.
 const GLOBAL: Scope<'static> = Scope {
     params: &[],
-    period: None,
+    position: None,
 };
 
-/// A recurrence, as one period of it is lowered.
-struct Period {
+/// A recurrence, as one position of it is lowered.
+struct Position {
     members: BTreeSet<usize>,
     state: usize,
+    axis: Axis,
+}
+
+/// What lies along one row or one column of a sheet: the cells covered before the range that
+/// grows along it, so that they can be kept from its style.
+struct Guard {
+    axis: Axis,
+    /// The row for a range that grows across, the column for one that grows down.
+    line: u32,
+    /// Where the range starts along the line.
+    start: u32,
 }
 
 struct Lowerer<'a> {
@@ -221,10 +242,10 @@ struct Lowerer<'a> {
     model: &'a Model,
     typed: &'a Typed,
     grounded: &'a Grounded,
-    styles: Vec<Style>,
+    styles: Vec<CellStyle>,
 }
 
-/// Lowers every sheet to cells and every shown binding to a defined name.
+/// Lowers every sheet to cells and every formula and value to a defined name.
 pub fn lower(
     program: &Program,
     model: &Model,
@@ -236,50 +257,50 @@ pub fn lower(
         model,
         typed,
         grounded,
-        styles: vec![Style::default()],
+        styles: vec![CellStyle::default()],
     };
     let mut errors = Vec::new();
     let mut sheets = Vec::new();
     let mut names = Vec::new();
-    for sheet in &model.sheets {
-        let mut cells = Cells::new();
-        let mut row_styles = BTreeMap::new();
-        for item in &sheet.items {
-            match *item {
-                SheetItem::Heading(index) => {
-                    let ItemKind::Heading { text, .. } = &program.items[index].kind else {
-                        unreachable!("a heading index points at a heading");
-                    };
-                    let style = lowerer.style(Style {
-                        bold: true,
-                        ..Style::default()
-                    });
-                    put(
-                        &mut cells,
-                        grounded.headings[&index],
-                        Value::Text(text.value.clone()),
-                        style,
-                    );
-                }
-                SheetItem::Gap(_) => {}
-                SheetItem::Binding(binding) => {
-                    match lowerer.binding(binding, &sheet.name, &mut cells, &mut row_styles) {
-                        Ok(name) => names.push(name),
-                        Err(error) => errors.push(error),
-                    }
-                }
+    for (index, sheet) in model.sheets.iter().enumerate() {
+        let mut out = SheetCells {
+            name: sheet.name.clone(),
+            color: sheet.color,
+            hidden: sheet.hidden,
+            cells: Cells::new(),
+            row_styles: BTreeMap::new(),
+            column_styles: BTreeMap::new(),
+            widths: BTreeMap::new(),
+        };
+        let mut guards = Vec::new();
+        for &binding in &model.layout {
+            if model.bindings[binding].sheet != Some(index) {
+                continue;
+            }
+            match lowerer.binding(binding, &mut out, &mut guards) {
+                Ok(Some(name)) => names.push(name),
+                Ok(None) => {}
+                Err(error) => errors.push(error),
             }
         }
-        let widths = widths(&cells);
-        sheets.push(SheetCells {
-            name: sheet.name.clone(),
-            cells,
-            row_styles,
-            widths,
-        });
+        // The cells before a range whose style covers its whole row or column keep the default.
+        for guard in &guards {
+            for before in 1..guard.start {
+                let key = match guard.axis {
+                    Axis::Across => (guard.line, before),
+                    Axis::Down => (before, guard.line),
+                };
+                out.cells.entry(key).or_insert(Cell {
+                    value: Value::Empty,
+                    style: 0,
+                });
+            }
+        }
+        out.widths = lowerer.widths(index, &out.cells);
+        sheets.push(out);
     }
     for (binding, b) in model.bindings.iter().enumerate() {
-        if b.role == Role::Function {
+        if b.role == Role::Lambda {
             match lowerer.function(binding) {
                 Ok(name) => names.push(name),
                 Err(error) => errors.push(error),
@@ -294,11 +315,33 @@ pub fn lower(
         sheets,
         names,
         styles: lowerer.styles,
+        font: Font {
+            name: Some(
+                model
+                    .font
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_FONT.to_string()),
+            ),
+            size: Some(model.font.size.unwrap_or(DEFAULT_SIZE)),
+            ..Font::default()
+        },
     })
 }
 
 impl Lowerer<'_> {
-    fn style(&mut self, style: Style) -> usize {
+    /// The index of a binding's style, with the font's name and size cascading from its sheet
+    /// and then the workbook.
+    fn style(&mut self, binding: usize) -> usize {
+        let b = &self.model.bindings[binding];
+        let mut style = b.style.clone().unwrap_or_default();
+        let sheet = &self.model.sheets[b.sheet.expect("a placed binding is on a sheet")];
+        style.font.name = style
+            .font
+            .name
+            .or_else(|| sheet.font.name.clone())
+            .or_else(|| self.model.font.name.clone());
+        style.font.size = style.font.size.or(sheet.font.size).or(self.model.font.size);
         match self.styles.iter().position(|known| *known == style) {
             Some(index) => index,
             None => {
@@ -311,102 +354,95 @@ impl Lowerer<'_> {
     fn binding(
         &mut self,
         binding: usize,
-        sheet: &str,
-        cells: &mut Cells,
-        row_styles: &mut BTreeMap<u32, usize>,
-    ) -> Result<DefinedName, Diagnostic> {
+        sheet: &mut SheetCells,
+        guards: &mut Vec<Guard>,
+    ) -> Result<Option<DefinedName>, Diagnostic> {
+        let style = self.style(binding);
         let b = &self.model.bindings[binding];
-        let sig = self
-            .model
-            .signature(self.program, binding)
-            .expect("a shown binding has a signature");
-        let label = sig.label.as_ref().expect("a shown binding has a label");
-        let (bold, italic) = (sig.bold.is_some(), sig.italic.is_some());
-        let label_style = self.style(Style {
-            bold,
-            italic,
-            ..Style::default()
-        });
-        put(
-            cells,
-            self.grounded.labels[&binding],
-            Value::Text(label.value.clone()),
-            label_style,
-        );
-        let value_style = self.style(Style {
-            format: sig.format.as_ref().map(|format| format.value.clone()),
-            bold,
-            italic,
-            input: b.role == Role::Input,
-        });
         let (row, column) = self.grounded.anchors[&binding];
         let expr = self.model.definition(self.program, binding);
-        if let Some(table) = self.model.tables.get(&binding) {
-            let header_style = self.style(Style {
-                bold: true,
-                ..Style::default()
-            });
-            let (header_row, header_column) = self.grounded.headers[&binding];
-            for (j, name) in table.header.iter().enumerate() {
-                let at = (header_row, header_column + to_i64(j));
-                put(cells, at, Value::Text(name.clone()), header_style);
+        let cells = &mut sheet.cells;
+        match b.role {
+            Role::Label => {
+                let ExprKind::Str(text) = &expr.kind else {
+                    unreachable!("Resolve checks that a label is its text");
+                };
+                put(cells, (row, column), Value::Text(text.clone()), style);
+                return Ok(None);
             }
-            for (i, fields) in table.rows.iter().enumerate() {
-                for (j, field) in fields.iter().enumerate() {
-                    let value = match field {
-                        Field::Empty => continue,
-                        Field::Number(value) => Value::Number(*value),
-                        Field::Bool(value) => Value::Bool(*value),
-                        Field::Text(text) => Value::Text(text.clone()),
-                    };
-                    put(
-                        cells,
-                        (row + to_i64(i), column + to_i64(j)),
-                        value,
-                        value_style,
-                    );
+            Role::Value => match self.model.tables.get(&binding) {
+                Some(table) => {
+                    for (i, fields) in table.rows.iter().enumerate() {
+                        for (j, field) in fields.iter().enumerate() {
+                            let value = match field {
+                                Field::Empty => Value::Empty,
+                                Field::Number(value) => Value::Number(*value),
+                                Field::Bool(value) => Value::Bool(*value),
+                                Field::Text(text) => Value::Text(text.clone()),
+                            };
+                            let at = (row + to_i64(i), column + to_i64(j));
+                            put(cells, at, value, style);
+                        }
+                    }
+                }
+                None => put(cells, (row, column), literal(expr), style),
+            },
+            Role::Formula => {
+                let formula = self.definition_formula(binding)?;
+                within_limits(b, &formula)?;
+                put(cells, (row, column), Value::Formula(formula.text), style);
+                let shape = &self.grounded.shapes[binding];
+                let rows = shape.rows.size.as_constant();
+                let columns = shape.columns.size.as_constant();
+                if style != 0 {
+                    match (rows, columns) {
+                        // The cells the formula spills into, styled like its anchor.
+                        (Some(rows), Some(columns)) => {
+                            for i in 0..rows {
+                                for j in 0..columns {
+                                    if (i, j) != (0, 0) {
+                                        let at = (row + i, column + j);
+                                        put(cells, at, Value::Empty, style);
+                                    }
+                                }
+                            }
+                        }
+                        (Some(rows), None) => {
+                            for i in 0..rows {
+                                let line = to_u32(row + i);
+                                sheet.row_styles.entry(line).or_insert(style);
+                                guards.push(Guard {
+                                    axis: Axis::Across,
+                                    line,
+                                    start: to_u32(column),
+                                });
+                            }
+                        }
+                        (None, Some(columns)) => {
+                            for j in 0..columns {
+                                let line = to_u32(column + j);
+                                sheet.column_styles.entry(line).or_insert(style);
+                                guards.push(Guard {
+                                    axis: Axis::Down,
+                                    line,
+                                    start: to_u32(row),
+                                });
+                            }
+                        }
+                        // A range that grows both ways takes its style in its anchor only.
+                        (None, None) => {}
+                    }
                 }
             }
-        } else if b.role == Role::Input {
-            let rows: Vec<Vec<&Expr>> = match &expr.kind {
-                ExprKind::List(rows) => rows.iter().map(|row| row.iter().collect()).collect(),
-                _ => vec![vec![expr]],
-            };
-            for (i, values) in rows.iter().enumerate() {
-                for (j, value) in values.iter().enumerate() {
-                    let at = (row + to_i64(i), column + to_i64(j));
-                    put(cells, at, literal(value), value_style);
-                }
-            }
-        } else {
-            let formula = self.definition_formula(binding)?;
-            within_limits(b, &formula)?;
-            put(
-                cells,
-                (row, column),
-                Value::Formula(formula.text),
-                value_style,
-            );
-            // A range of unknown height takes its style in its anchor cell only.
-            let shape = &self.grounded.shapes[binding];
-            let one_cell = shape.rows.size.as_constant() == Some(1)
-                && shape.columns.size.as_constant() == Some(1);
-            if value_style != 0
-                && !one_cell
-                && let Some(rows) = shape.rows.size.as_constant()
-            {
-                for spilled in row..row + rows {
-                    row_styles.entry(to_u32(spilled)).or_insert(value_style);
-                }
-            }
+            _ => unreachable!("only formulas, values and labels have cells"),
         }
-        Ok(DefinedName {
+        Ok(Some(DefinedName {
             name: b.name.clone(),
-            refers_to: self.reference(binding, sheet, (row, column)),
-        })
+            refers_to: self.reference(binding, &sheet.name, (row, column)),
+        }))
     }
 
-    /// The formula for a binding's definition. A balance carried from one period to the next is
+    /// The formula for a binding's definition. A value carried from one position to the next is
     /// worked out by a scan.
     fn definition_formula(&self, binding: usize) -> Result<Formula, Diagnostic> {
         match self.model.recurrence_of(binding) {
@@ -415,15 +451,17 @@ impl Lowerer<'_> {
         }
     }
 
-    /// A balance carried from one period to the next, as a SCAN over the periods. The scan
-    /// starts from the balance's first value; at each period it works out the balance from the
-    /// balance a period back, with the other members of the cycle written in place, so that the
+    /// A value carried from one position to the next, as a SCAN over the positions. The scan
+    /// starts from the value's first value; at each position it works out the value from the
+    /// value a position back, with the other members of the cycle written in place, so that the
     /// workbook holds no circular reference.
     fn scan(&self, recurrence: &Recurrence) -> Result<Formula, Diagnostic> {
         let state = recurrence.state;
-        let period = Period {
+        let axis = self.typed.carried[&state];
+        let position = Position {
             members: recurrence.members.iter().copied().collect(),
             state,
+            axis,
         };
         let definitions = || {
             recurrence
@@ -433,20 +471,21 @@ impl Lowerer<'_> {
         };
         let first = definitions()
             .find_map(|definition| self.first_value(definition, state))
-            .expect("Resolve finds the balance's first value");
+            .expect("Resolve finds the carried value's first value");
         let driver = definitions()
             .find_map(|definition| find(definition, self.typed.drivers[&state]))
             .expect("Infer finds the part the scan runs over");
-        let periods = call(
-            "_xlfn.SEQUENCE",
-            &[
-                Formula::atom("1"),
-                call("COLUMNS", &[self.formula(driver, GLOBAL)?]),
-            ],
-        );
+        let driver = self.formula(driver, GLOBAL)?;
+        let positions = match axis {
+            Axis::Across => call(
+                "_xlfn.SEQUENCE",
+                &[Formula::atom("1"), call("COLUMNS", &[driver])],
+            ),
+            Axis::Down => call("_xlfn.SEQUENCE", &[call("ROWS", &[driver])]),
+        };
         let scope = Scope {
             params: &[],
-            period: Some(&period),
+            position: Some(&position),
         };
         let body = self.formula(self.model.definition(self.program, state), scope)?;
         let step = call(
@@ -459,16 +498,17 @@ impl Lowerer<'_> {
         );
         Ok(call(
             "_xlfn.SCAN",
-            &[self.formula(first, GLOBAL)?, periods, step],
+            &[self.formula(first, GLOBAL)?, positions, step],
         ))
     }
 
-    /// The first value in `lag 1 state from first`, if the expression holds one.
+    /// The first value in `lag 1 state seed first`, if the expression holds one.
     fn first_value<'e>(&self, expr: &'e Expr, state: usize) -> Option<&'e Expr> {
         if let ExprKind::Apply {
             func,
             args,
             seed: Some(seed),
+            ..
         } = &expr.kind
             && func.name == "lag"
             && matches!(&args[1].kind, ExprKind::Name(name)
@@ -482,26 +522,26 @@ impl Lowerer<'_> {
     }
 
     /// Whether an expression uses a member of the recurrence.
-    fn mentions(&self, expr: &Expr, period: &Period) -> bool {
+    fn mentions(&self, expr: &Expr, position: &Position) -> bool {
         match &expr.kind {
             ExprKind::Name(name) => matches!(
                 self.model.symbols.get(name),
-                Some(Symbol::Binding(binding)) if period.members.contains(binding)
+                Some(Symbol::Binding(binding)) if position.members.contains(binding)
             ),
             _ => expr
                 .children()
                 .into_iter()
-                .any(|child| self.mentions(child, period)),
+                .any(|child| self.mentions(child, position)),
         }
     }
 
-    /// A function, as a defined name whose value is a LAMBDA of its parameters. It can be
-    /// called by name in the workbook as well as in the file.
+    /// A lambda, as a defined name whose value is a LAMBDA of its parameters. It can be called by
+    /// name in the workbook as well as in the file.
     fn function(&self, binding: usize) -> Result<DefinedName, Diagnostic> {
         let b = &self.model.bindings[binding];
         let scope = Scope {
             params: &b.params,
-            period: None,
+            position: None,
         };
         let body = self.formula(self.model.definition(self.program, binding), scope)?;
         let mut args: Vec<Formula> = b
@@ -518,7 +558,7 @@ impl Lowerer<'_> {
         })
     }
 
-    /// What a shown binding's defined name refers to.
+    /// What a formula's or a value's defined name refers to.
     fn reference(&self, binding: usize, sheet: &str, (row, column): At) -> String {
         let shape = &self.grounded.shapes[binding];
         let sheet = sheet_reference(sheet);
@@ -527,7 +567,7 @@ impl Lowerer<'_> {
         let columns = shape.columns.size.as_constant();
         match (self.model.bindings[binding].role, rows, columns) {
             (_, Some(1), Some(1)) => format!("{sheet}!{start}"),
-            (Role::Input, Some(rows), Some(columns)) => {
+            (Role::Value, Some(rows), Some(columns)) => {
                 let end = absolute(to_u32(row + rows - 1), to_u32(column + columns - 1));
                 format!("{sheet}!{start}:{end}")
             }
@@ -535,25 +575,40 @@ impl Lowerer<'_> {
         }
     }
 
+    /// The way `lag`, `tail` or `init` at `expr` works: as written, or as Infer found.
+    fn axis(&self, expr: &Expr, written: Option<Axis>) -> Axis {
+        written.unwrap_or_else(|| {
+            *self
+                .typed
+                .axes
+                .get(&expr.pos)
+                .expect("Infer finds the way every lag, tail and init works")
+        })
+    }
+
     /// The formula for an expression, in `scope`.
     fn formula(&self, expr: &Expr, scope: Scope<'_>) -> Result<Formula, Diagnostic> {
-        // Inside one period of a recurrence, a part outside the cycle is worked out whole, and
-        // read at the period if it is a row.
-        if let Some(period) = scope.period
-            && !self.mentions(expr, period)
+        // Inside one position of a recurrence, a part outside the cycle is worked out whole, and
+        // read at the position if it runs along the recurrence.
+        if let Some(position) = scope.position
+            && !self.mentions(expr, position)
         {
             let whole = self.formula(
                 expr,
                 Scope {
-                    period: None,
+                    position: None,
                     ..scope
                 },
             )?;
-            if !self.typed.rows.contains(&expr.pos) {
+            if !self.typed.along.contains(&expr.pos) {
                 return Ok(whole);
             }
             let at = Formula::atom(format!("_xlpm.{}", TOOL_NAMES[4]));
-            return Ok(call("INDEX", &[whole, Formula::atom("1"), at]));
+            let one = Formula::atom("1");
+            return Ok(match position.axis {
+                Axis::Across => call("INDEX", &[whole, one, at]),
+                Axis::Down => call("INDEX", &[whole, at, one]),
+            });
         }
         let formula = match &expr.kind {
             ExprKind::Number { value, .. } => Formula::atom(number(*value)),
@@ -563,7 +618,7 @@ impl Lowerer<'_> {
                         expr.pos,
                         format!(
                             "a string in a formula has at most {MAX_FORMULA_STRING} characters; \
-                             a longer text can be an input"
+                             a longer text can be a value"
                         ),
                     ));
                 }
@@ -574,11 +629,11 @@ impl Lowerer<'_> {
                 Formula::atom(format!("_xlpm.{name}"))
             }
             ExprKind::Name(name) => match self.model.symbols.get(name) {
-                // Another member of the cycle, in the same period: its definition, in place.
+                // Another member of the cycle, at the same position: its definition, in place.
                 Some(Symbol::Binding(binding))
                     if scope
-                        .period
-                        .is_some_and(|period| period.members.contains(binding)) =>
+                        .position
+                        .is_some_and(|position| position.members.contains(binding)) =>
                 {
                     self.formula(self.model.definition(self.program, *binding), scope)?
                 }
@@ -594,7 +649,10 @@ impl Lowerer<'_> {
                         .expect("Resolve lets formulas use fixed sizes only")
                         .to_string(),
                 ),
-                None => unreachable!("Resolve reports unknown names"),
+                None => match Builtin::lookup(name) {
+                    Some(Builtin::Na) => call("NA", &[]),
+                    _ => unreachable!("Resolve reports unknown names"),
+                },
             },
             ExprKind::Neg(operand) => {
                 let operand = self.formula(operand, scope)?;
@@ -628,28 +686,15 @@ impl Lowerer<'_> {
                     .collect();
                 Formula::atom(format!("{{{}}}", rows.join(";")))
             }
-            ExprKind::Range { first, last } => {
-                let start = first
-                    .integer()
-                    .expect("Infer checks that a range starts at a whole number");
-                let last = self.formula(last, scope)?;
-                // The count of whole numbers from `start` to `last` is `last - (start - 1)`.
-                let count = match start - 1 {
-                    0 => last,
-                    offset if offset > 0 => {
-                        binary(BinOp::Sub, &last, &Formula::atom(offset.to_string()))
-                    }
-                    offset => binary(BinOp::Add, &last, &Formula::atom((-offset).to_string())),
-                };
-                let mut args = vec![Formula::atom("1"), count];
-                if start != 1 {
-                    args.push(Formula::atom(start.to_string()));
-                }
-                call("_xlfn.SEQUENCE", &args)
-            }
-            ExprKind::Apply { func, args, seed } => match Builtin::lookup(&func.name) {
-                Some(builtin) => self.apply(builtin, args, seed.as_deref(), scope)?,
-                // A function of the file's own is a defined name, called by that name.
+            ExprKind::Range { first, last } => self.range(first, last, Axis::Across, scope)?,
+            ExprKind::Apply {
+                func,
+                axis,
+                args,
+                seed,
+            } => match Builtin::lookup(&func.name) {
+                Some(builtin) => self.apply(expr, builtin, *axis, args, seed.as_deref(), scope)?,
+                // A lambda of the file's own is a defined name, called by that name.
                 None => {
                     let args = args
                         .iter()
@@ -658,47 +703,101 @@ impl Lowerer<'_> {
                     call(&func.name, &args)
                 }
             },
+            ExprKind::Text(_)
+            | ExprKind::Constructor(_)
+            | ExprKind::Record(_)
+            | ExprKind::Update { .. } => unreachable!("Resolve keeps settings out of formulas"),
         };
         Ok(formula)
     }
 
+    /// The whole numbers from `first` to `last`, as a row or as a column.
+    fn range(
+        &self,
+        first: &Expr,
+        last: &Expr,
+        axis: Axis,
+        scope: Scope<'_>,
+    ) -> Result<Formula, Diagnostic> {
+        let start = first
+            .integer()
+            .expect("Infer checks that a range starts at a whole number");
+        // The count of whole numbers from `start` to `last` is `last - (start - 1)`, worked out
+        // here when `last` is written in the file.
+        let count = match last.integer() {
+            Some(end) => Formula::atom((end - start + 1).to_string()),
+            None => {
+                let last = self.formula(last, scope)?;
+                match start - 1 {
+                    0 => last,
+                    offset if offset > 0 => {
+                        binary(BinOp::Sub, &last, &Formula::atom(offset.to_string()))
+                    }
+                    offset => binary(BinOp::Add, &last, &Formula::atom((-offset).to_string())),
+                }
+            }
+        };
+        let mut args = match axis {
+            Axis::Across => vec![Formula::atom("1"), count],
+            Axis::Down => vec![count],
+        };
+        if start != 1 {
+            if axis == Axis::Down {
+                args.push(Formula::atom("1"));
+            }
+            args.push(Formula::atom(start.to_string()));
+        }
+        Ok(call("_xlfn.SEQUENCE", &args))
+    }
+
     fn apply(
         &self,
+        expr: &Expr,
         builtin: Builtin,
+        written: Option<Axis>,
         args: &[Expr],
         seed: Option<&Expr>,
         scope: Scope<'_>,
     ) -> Result<Formula, Diagnostic> {
         let arg = |index: usize| self.formula(&args[index], scope);
-        let drop_columns = |x: Formula, columns: i64| {
-            call(
-                "_xlfn.DROP",
-                &[x, Formula::atom(""), Formula::atom(columns.to_string())],
-            )
+        // DROP takes rows first and columns second; an empty argument drops nothing.
+        let drop = |x: Formula, axis: Axis, count: i64| {
+            let count = Formula::atom(count.to_string());
+            match axis {
+                Axis::Across => call("_xlfn.DROP", &[x, Formula::atom(""), count]),
+                Axis::Down => call("_xlfn.DROP", &[x, count]),
+            }
         };
         let formula = match builtin {
-            // Inside one period of a recurrence, the balance a period back is the scan's own.
+            // Inside one position of a recurrence, the value a position back is the scan's own.
             Builtin::Lag
                 if seed.is_some()
-                    && scope.period.is_some_and(|period| {
+                    && scope.position.is_some_and(|position| {
                         matches!(&args[1].kind, ExprKind::Name(name)
-                            if self.model.symbols.get(name) == Some(&Symbol::Binding(period.state)))
+                            if self.model.symbols.get(name) == Some(&Symbol::Binding(position.state)))
                     }) =>
             {
                 Formula::atom(format!("_xlpm.{}", TOOL_NAMES[3]))
             }
             Builtin::Lag => {
-                let periods = args[0]
+                let axis = self.axis(expr, written);
+                let steps = args[0]
                     .integer()
                     .expect("Infer checks that a lag is a whole number");
-                let dropped = drop_columns(arg(1)?, -periods);
+                let dropped = drop(arg(1)?, axis, -steps);
                 match seed {
-                    Some(seed) => call("_xlfn.HSTACK", &[self.formula(seed, scope)?, dropped]),
+                    Some(seed) => {
+                        let stack = match axis {
+                            Axis::Across => "_xlfn.HSTACK",
+                            Axis::Down => "_xlfn.VSTACK",
+                        };
+                        call(stack, &[self.formula(seed, scope)?, dropped])
+                    }
                     None => dropped,
                 }
             }
-            Builtin::Tail => drop_columns(arg(0)?, 1),
-            Builtin::Init => drop_columns(arg(0)?, -1),
+            Builtin::Tail => drop(arg(0)?, self.axis(expr, written), 1),
+            Builtin::Init => drop(arg(0)?, self.axis(expr, written), -1),
             Builtin::Sum => call("SUM", &[arg(0)?]),
             Builtin::Average => call("AVERAGE", &[arg(0)?]),
             Builtin::Minimum => call("MIN", &[arg(0)?]),
@@ -739,7 +838,11 @@ impl Lowerer<'_> {
             Builtin::Sqrt => call("SQRT", &[arg(0)?]),
             Builtin::Not => call("NOT", &[arg(0)?]),
             Builtin::Round => call("ROUND", &[arg(1)?, arg(0)?]),
-            Builtin::Transpose => call("TRANSPOSE", &[arg(0)?]),
+            // A column of whole numbers is written as one, rather than as a row transposed.
+            Builtin::Transpose => match &args[0].kind {
+                ExprKind::Range { first, last } => self.range(first, last, Axis::Down, scope)?,
+                _ => call("TRANSPOSE", &[arg(0)?]),
+            },
             Builtin::Lookup => call("_xlfn.XLOOKUP", &[arg(0)?, arg(1)?, arg(2)?]),
             Builtin::Column => {
                 let (ExprKind::Str(name), ExprKind::Name(table)) = (&args[0].kind, &args[1].kind)
@@ -764,9 +867,48 @@ impl Lowerer<'_> {
                     ],
                 )
             }
-            Builtin::Csv => unreachable!("Resolve allows csv only as an input's definition"),
+            Builtin::Na => call("NA", &[]),
+            Builtin::Csv => unreachable!("Resolve allows csv only as a value's definition"),
         };
         Ok(formula)
+    }
+
+    /// Column widths: each column of text wide enough for its longest text, within reason, and
+    /// each column that nothing is in, before the last that something is in, narrow, as a gap.
+    fn widths(&self, sheet: usize, cells: &Cells) -> BTreeMap<u32, f64> {
+        let mut longest: BTreeMap<u32, usize> = BTreeMap::new();
+        for (&(_, column), cell) in cells {
+            if let Value::Text(text) = &cell.value {
+                let entry = longest.entry(column).or_insert(0);
+                *entry = (*entry).max(text.chars().count());
+            }
+        }
+        let mut widths: BTreeMap<u32, f64> = longest
+            .into_iter()
+            .map(|(column, chars)| (column, (chars as f64 * 1.1 + 2.0).clamp(10.0, 60.0)))
+            .collect();
+        // The columns each range covers, those it spills into included. A range of unknown
+        // width covers every column from its first.
+        let mut used: BTreeSet<u32> = BTreeSet::new();
+        let mut open_from = u32::MAX;
+        for &binding in &self.model.layout {
+            if self.model.bindings[binding].sheet != Some(sheet) {
+                continue;
+            }
+            let (_, column) = self.grounded.anchors[&binding];
+            let column = to_u32(column);
+            match self.grounded.shapes[binding].columns.size.as_constant() {
+                Some(width) => used.extend(column..column + to_u32(width)),
+                None => open_from = open_from.min(column),
+            }
+        }
+        let last = used.iter().copied().max().unwrap_or(0).min(open_from);
+        for column in 1..last {
+            if !used.contains(&column) && column < open_from {
+                widths.insert(column, GAP_WIDTH);
+            }
+        }
+        widths
     }
 }
 
@@ -792,7 +934,7 @@ fn within_limits(binding: &Binding, formula: &Formula) -> Result<(), Diagnostic>
     Err(Diagnostic::error(
         binding.pos,
         format!(
-            "the formula for `{}` {problem}; make parts of it shown bindings of their own",
+            "the formula for `{}` {problem}; make parts of it formulas of their own",
             binding.name
         ),
     ))
@@ -818,49 +960,60 @@ fn constant(value: &Value) -> String {
         Value::Number(value) => number(*value),
         Value::Text(text) => format!("\"{}\"", text.replace('"', "\"\"")),
         Value::Bool(value) => String::from(if *value { "TRUE" } else { "FALSE" }),
-        Value::Formula(_) => unreachable!("a literal is not a formula"),
+        Value::Formula(_) | Value::Empty => unreachable!("a literal is a value"),
     }
 }
 
-/// Column widths: each column of text wide enough for its longest text, within reason, and the
-/// margin and the gap before the values narrow when they are empty.
-fn widths(cells: &Cells) -> BTreeMap<u32, f64> {
-    let mut longest: BTreeMap<u32, usize> = BTreeMap::new();
-    for (&(_, column), cell) in cells {
-        if let Value::Text(text) = &cell.value {
-            let entry = longest.entry(column).or_insert(0);
-            *entry = (*entry).max(text.chars().count());
-        }
-    }
-    let mut widths: BTreeMap<u32, f64> = longest
-        .into_iter()
-        .map(|(column, chars)| (column, (chars as f64 * 1.1 + 2.0).clamp(10.0, 60.0)))
-        .collect();
-    let used: BTreeSet<u32> = cells.keys().map(|&(_, column)| column).collect();
-    let gap = to_u32(VALUE_COLUMN - 1);
-    let margin = to_u32(VALUE_COLUMN - LABEL_OFFSET - 1);
-    for column in [margin, gap] {
-        if !used.contains(&column) {
-            widths.insert(column, 2.7);
-        }
-    }
-    widths
+fn rgb(color: Rgb) -> String {
+    format!("{:02X}{:02X}{:02X}", color.red, color.green, color.blue)
 }
 
 /// A style in words, for a listing.
-fn notes(style: &Style) -> Vec<String> {
+fn notes(style: &CellStyle) -> Vec<String> {
     let mut notes = Vec::new();
-    if style.input {
-        notes.push("input".to_string());
-    }
-    if style.bold {
+    let font = &style.font;
+    if font.bold == Some(true) {
         notes.push("bold".to_string());
     }
-    if style.italic {
+    if font.italic == Some(true) {
         notes.push("italic".to_string());
     }
+    if let Some(name) = &font.name {
+        notes.push(format!("font '{name}'"));
+    }
+    if let Some(size) = font.size {
+        notes.push(format!("size {}", number(size)));
+    }
+    if let Some(color) = font.color {
+        notes.push(format!("color {}", rgb(color)));
+    }
+    if let Some(fill) = style.fill {
+        notes.push(format!("fill {}", rgb(fill)));
+    }
+    let border = &style.border;
+    for (side, edge) in [
+        ("left", &border.left),
+        ("right", &border.right),
+        ("top", &border.top),
+        ("bottom", &border.bottom),
+    ] {
+        if let Some(edge) = edge {
+            let mut note = format!("{side} {}", edge.weight.unwrap_or("none"));
+            if let Some(color) = edge.color {
+                note.push_str(&format!(" {}", rgb(color)));
+            }
+            notes.push(note);
+        }
+    }
+    let align = &style.align;
+    notes.extend(align.horizontal.map(|h| format!("horizontal {h}")));
+    notes.extend(align.vertical.map(|v| format!("vertical {v}")));
+    if align.wrap == Some(true) {
+        notes.push("wrap".to_string());
+    }
+    notes.extend(align.indent.map(|i| format!("indent {i}")));
     if let Some(format) = &style.format {
-        notes.push(format!("format \"{format}\""));
+        notes.push(format!("format '{format}'"));
     }
     notes
 }
@@ -868,26 +1021,47 @@ fn notes(style: &Style) -> Vec<String> {
 /// The cells and names of a workbook, as text, for reading what Lower produced.
 pub fn listing(workbook: &Workbook) -> String {
     let mut out = String::new();
+    let bracketed = |notes: Vec<String>| {
+        if notes.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", notes.join(", "))
+        }
+    };
     for sheet in &workbook.sheets {
-        out.push_str(&format!("sheet '{}'\n", sheet.name.replace('\'', "''")));
+        let mut settings = Vec::new();
+        if let Some(color) = sheet.color {
+            settings.push(format!("tab {}", rgb(color)));
+        }
+        if sheet.hidden {
+            settings.push("hidden".to_string());
+        }
+        out.push_str(&format!(
+            "sheet '{}'{}\n",
+            sheet.name.replace('\'', "''"),
+            bracketed(settings)
+        ));
         for (&(row, column), cell) in &sheet.cells {
             let value = match &cell.value {
                 Value::Number(value) => number(*value),
-                Value::Text(text) => format!("'{}'", text.replace('\'', "''")),
+                Value::Text(text) => format!("\"{}\"", text.replace('"', "\"\"")),
                 Value::Bool(value) => String::from(if *value { "TRUE" } else { "FALSE" }),
                 Value::Formula(formula) => format!("={formula}"),
+                Value::Empty => "_".to_string(),
             };
-            let notes = notes(&workbook.styles[cell.style]);
-            let notes = if notes.is_empty() {
-                String::new()
-            } else {
-                format!("  [{}]", notes.join(", "))
-            };
+            let notes = bracketed(notes(&workbook.styles[cell.style]));
             out.push_str(&format!("  {:<6} {value}{notes}\n", cell_name(row, column)));
         }
         for (row, style) in &sheet.row_styles {
-            let notes = notes(&workbook.styles[*style]).join(", ");
-            out.push_str(&format!("  row {row}  [{notes}]\n"));
+            let notes = bracketed(notes(&workbook.styles[*style]));
+            out.push_str(&format!("  row {row}{notes}\n"));
+        }
+        for (column, style) in &sheet.column_styles {
+            let notes = bracketed(notes(&workbook.styles[*style]));
+            out.push_str(&format!(
+                "  column {}{notes}\n",
+                crate::cells::column_name(*column)
+            ));
         }
     }
     out.push_str("names\n");

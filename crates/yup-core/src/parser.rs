@@ -6,19 +6,23 @@
 //! Precedence, from loosest to tightest: `if` and `..`; `||`; `&&`; comparisons; `++`; `+` and
 //! `-`; `*` and `/`; negation; `^`; application of a function to its arguments.
 
+use crate::cells::{MAX_COLUMNS, MAX_ROWS, parse_cell};
 use crate::diagnostic::{Diagnostic, Pos};
+use crate::functions::Builtin;
 use crate::lexer::{Lexeme, Token, lex};
 use crate::syntax::{
-    BinOp, Coord, Expr, ExprKind, Ident, Item, ItemKind, Offset, Program, ShapeSyntax, Signature,
-    SizeKind, SizeSyntax, Text,
+    Axis, BinOp, CellType, Direction, Expr, ExprKind, Field, Ident, Item, ItemKind, Move, Offset,
+    Placement, Program, Role, ShapeSyntax, Side, Signature, SizeKind, SizeSyntax, StyleName,
+    StyleType, Type,
 };
 
 /// The language version this reader accepts, as the first line of a file gives it.
-pub const VERSION: &str = "0.1";
+pub const VERSION: &str = "0.2";
 
 /// Names that cannot be used for bindings, size variables or functions.
 pub const KEYWORDS: &[&str] = &[
-    "else", "false", "from", "gap", "heading", "if", "sheet", "then", "true", "yup",
+    "across", "at", "down", "east", "else", "false", "from", "if", "left", "north", "right",
+    "seed", "south", "start", "then", "true", "up", "west", "yup",
 ];
 
 /// Parses a whole file.
@@ -45,7 +49,7 @@ struct Parser {
     errors: Vec<Diagnostic>,
 }
 
-fn is_keyword(name: &str) -> bool {
+pub fn is_keyword(name: &str) -> bool {
     KEYWORDS.contains(&name)
 }
 
@@ -75,18 +79,20 @@ fn comparison_op(token: &Token) -> Option<BinOp> {
 /// Whether a token can start an argument of a function.
 fn starts_atom(token: &Token) -> bool {
     match token {
-        Token::Number(..) | Token::Str(_) | Token::LParen | Token::LBracket => true,
-        Token::Name(name) => name == "true" || name == "false" || !is_keyword(name),
+        Token::Number(..)
+        | Token::Str(_)
+        | Token::Text(_)
+        | Token::Word(_)
+        | Token::LParen
+        | Token::LBracket => true,
+        Token::Name(name) => !is_keyword(name),
         _ => false,
     }
 }
 
-fn set_once<T>(slot: &mut Option<T>, value: T, pos: Pos, what: &str) -> Parsed<()> {
-    if slot.is_some() {
-        return Err(Diagnostic::error(pos, format!("{what} is given twice")));
-    }
-    *slot = Some(value);
-    Ok(())
+/// The functions that may say which way they work along a range.
+fn takes_axis(name: &str) -> bool {
+    matches!(name, "lag" | "tail" | "init")
 }
 
 impl Parser {
@@ -228,56 +234,45 @@ impl Parser {
                     comment: None,
                 });
             }
-            Token::Name(name) => match name.as_str() {
-                "sheet" => {
-                    self.advance();
-                    ItemKind::Sheet(self.text("a sheet name in single quotes, such as 'Forecast'")?)
-                }
-                "heading" => {
-                    self.advance();
-                    let text = self.text("a heading in single quotes")?;
-                    let at = if *self.peek() == Token::At {
-                        self.advance();
-                        Some(self.coord()?)
-                    } else {
-                        None
-                    };
-                    ItemKind::Heading { text, at }
-                }
-                "gap" => {
-                    self.advance();
-                    ItemKind::Gap
-                }
-                _ if is_keyword(&name) => {
+            Token::Name(name) if is_keyword(&name) => {
+                return Err(Diagnostic::error(
+                    pos,
+                    format!("`{name}` is a keyword and cannot start a statement"),
+                ));
+            }
+            Token::Name(name) => match self.peek_second() {
+                Token::Colon => self.signature()?,
+                // A name followed by names is a lambda and its parameters.
+                Token::Equals | Token::Name(_) => self.definition()?,
+                Token::Text(_) | Token::Newline
+                    if matches!(name.as_str(), "sheet" | "heading" | "gap") =>
+                {
                     return Err(Diagnostic::error(
                         pos,
-                        format!("`{name}` is a keyword and cannot start a statement"),
+                        format!(
+                            "`{name}` statements are gone: a sheet is a binding, \
+                             `forecast : Sheet`, a heading is a `Label`, and a gap is a \
+                             distance, as in `total_label down 2`"
+                        ),
                     ));
                 }
-                _ => match self.peek_second() {
-                    Token::Colon => self.signature()?,
-                    // A name followed by names is a function and its parameters.
-                    Token::Equals | Token::Name(_) => self.definition()?,
-                    _ => {
-                        self.advance();
-                        return Err(self.unexpected(&format!("`:` or `=` after `{name}`")));
-                    }
-                },
+                _ => {
+                    self.advance();
+                    return Err(self.unexpected(&format!("`:` or `=` after `{name}`")));
+                }
             },
+            Token::Word(word) => {
+                return Err(Diagnostic::error(
+                    pos,
+                    format!(
+                        "a statement starts with a binding's name, in lower case, not `{word}`"
+                    ),
+                ));
+            }
             _ => return Err(self.unexpected("a statement")),
         };
         let comment = self.end_of_statement()?;
         Ok(Item { pos, kind, comment })
-    }
-
-    fn text(&mut self, what: &str) -> Parsed<Text> {
-        match self.peek().clone() {
-            Token::Text(value) => {
-                let pos = self.advance().pos;
-                Ok(Text { value, pos })
-            }
-            _ => Err(self.unexpected(what)),
-        }
     }
 
     fn ident(&mut self) -> Parsed<Ident> {
@@ -305,89 +300,225 @@ impl Parser {
         }
     }
 
+    /// The word at the current token, if it is one.
+    fn word(&self) -> Option<String> {
+        match self.peek() {
+            Token::Word(word) => Some(word.clone()),
+            _ => None,
+        }
+    }
+
     fn signature(&mut self) -> Parsed<ItemKind> {
         let name = self.ident()?;
         self.expect(&Token::Colon, "`:`")?;
-        if matches!(self.peek(), Token::Word(w) if w == "Size") {
-            self.advance();
-            let kind = match self.peek() {
-                Token::Word(w) if w == "Fixed" => SizeKind::Fixed,
-                Token::Word(w) if w == "Unknown" => SizeKind::Unknown,
+        let role_pos = self.pos();
+        let Some(word) = self.word() else {
+            return Err(self.unexpected(
+                "a role: Formula, Value, Label, Local, Lambda, Style, Sheet, Workbook or Size",
+            ));
+        };
+        self.advance();
+        if word == "Size" {
+            let kind = match self.word().as_deref() {
+                Some("Fixed") => SizeKind::Fixed,
+                Some("Unknown") => SizeKind::Unknown,
                 _ => return Err(self.unexpected("`Fixed` or `Unknown` after `Size`")),
             };
             self.advance();
             return Ok(ItemKind::Size { name, kind });
         }
-        let mut sig = Signature::new(name);
-        loop {
-            let pos = self.pos();
-            match self.peek().clone() {
-                Token::Newline | Token::Comment(_) | Token::Eof => break,
-                Token::LBracket => {
-                    let shape = self.shape()?;
-                    set_once(&mut sig.shape, shape, pos, "a size")?;
+        let Some(role) = Role::from_word(&word) else {
+            let hint = match word.as_str() {
+                "Input" => {
+                    "; a cell written in the file is a `Value`, such as `rate : Value Number \
+                     percent rate_label right 2`"
                 }
-                Token::Name(name) if name == "from" => {
-                    self.advance();
-                    let offset = self.offset(pos)?;
-                    set_once(&mut sig.from, offset, pos, "`from`")?;
-                }
-                Token::Text(_) => {
-                    let label = self.text("a label")?;
-                    set_once(&mut sig.label, label, pos, "a label")?;
-                }
-                Token::At => {
-                    self.advance();
-                    let at = self.coord()?;
-                    set_once(&mut sig.at, at, pos, "an anchor")?;
-                }
-                Token::Word(word) => {
-                    self.advance();
-                    match word.as_str() {
-                        "Input" => set_once(&mut sig.input, pos, pos, "`Input`")?,
-                        "Bold" => set_once(&mut sig.bold, pos, pos, "`Bold`")?,
-                        "Italic" => set_once(&mut sig.italic, pos, pos, "`Italic`")?,
-                        "Format" => {
-                            let format = match self.peek().clone() {
-                                Token::Str(value) => {
-                                    let pos = self.advance().pos;
-                                    Text { value, pos }
-                                }
-                                _ => {
-                                    return Err(self.unexpected(
-                                        "a number format in double quotes, such as \"0.0%\"",
-                                    ));
-                                }
-                            };
-                            set_once(&mut sig.format, format, pos, "`Format`")?;
-                        }
-                        "Size" => {
-                            return Err(Diagnostic::error(
-                                pos,
-                                "`Size` declares a size variable on a line of its own, such as \
-                                 `n : Size Unknown`",
-                            ));
-                        }
-                        _ => {
-                            return Err(Diagnostic::error(
-                                pos,
-                                format!(
-                                    "unknown attribute `{word}`; a signature takes Input, \
-                                     Format, Bold and Italic"
-                                ),
-                            ));
-                        }
-                    }
-                }
-                _ => {
-                    return Err(self.unexpected(
-                        "a size such as `[1, n]`, a label in single quotes, `@`, or an \
-                         attribute such as `Input`",
-                    ));
-                }
+                _ => "",
+            };
+            return Err(Diagnostic::error(
+                role_pos,
+                format!(
+                    "`{word}` is not a role; a signature starts with Formula, Value, Label, \
+                     Local, Lambda, Style, Sheet, Workbook or Size{hint}"
+                ),
+            ));
+        };
+        let mut sig = Signature::new(name, role, role_pos);
+        sig.ty = self.signature_type(role)?;
+        if role.is_placed() {
+            sig.style = Some(match self.peek().clone() {
+                Token::Underscore => StyleName::Default(self.advance().pos),
+                Token::Name(name) if !is_keyword(&name) => StyleName::Named(self.ident()?),
+                _ => return Err(self.unexpected("a style's name, or `_` for the default")),
+            });
+        }
+        if matches!(
+            role,
+            Role::Formula | Role::Value | Role::Label | Role::Local
+        ) {
+            if *self.peek() == Token::LBracket {
+                sig.shape = Some(self.shape()?);
+            }
+            if self.at_name("start") {
+                let pos = self.advance().pos;
+                sig.start = Some(self.offset(pos)?);
             }
         }
+        if role.is_placed() {
+            sig.place = self.placement()?;
+        }
         Ok(ItemKind::Signature(Box::new(sig)))
+    }
+
+    /// The type after a role: optional for what holds cells, and required for a lambda and a
+    /// style.
+    fn signature_type(&mut self, role: Role) -> Parsed<Option<(Type, Pos)>> {
+        let pos = self.pos();
+        let word = self.word();
+        match role {
+            Role::Formula | Role::Value | Role::Local => match word {
+                Some(word) => match CellType::from_word(&word) {
+                    Some(ty) => {
+                        self.advance();
+                        Ok(Some((Type::Cell(ty), pos)))
+                    }
+                    None => Err(Diagnostic::error(
+                        pos,
+                        format!("`{word}` is not a type; a cell holds Number, Text or Logical"),
+                    )),
+                },
+                None => Ok(None),
+            },
+            Role::Label => match word {
+                Some(_) => Err(Diagnostic::error(
+                    pos,
+                    "a label always holds Text, so its signature names no type",
+                )),
+                None => Ok(None),
+            },
+            Role::Lambda => {
+                let mut types = vec![self.cell_type()?];
+                while *self.peek() == Token::Arrow {
+                    self.advance();
+                    types.push(self.cell_type()?);
+                }
+                if types.len() < 2 {
+                    return Err(Diagnostic::error(
+                        pos,
+                        "a lambda's type names its parameters and its result, such as `Number -> \
+                         Number`",
+                    ));
+                }
+                Ok(Some((Type::Function(types), pos)))
+            }
+            Role::Style => match word.as_deref().and_then(StyleType::from_word) {
+                Some(ty) => {
+                    self.advance();
+                    Ok(Some((Type::Style(ty), pos)))
+                }
+                None => Err(self
+                    .unexpected("the kind of style: Cell, Font, Border, Edge, Alignment or Color")),
+            },
+            Role::Sheet | Role::Workbook => Ok(None),
+        }
+    }
+
+    fn cell_type(&mut self) -> Parsed<CellType> {
+        match self.word().as_deref().and_then(CellType::from_word) {
+            Some(ty) => {
+                self.advance();
+                Ok(ty)
+            }
+            None => Err(self.unexpected("a type: Number, Text or Logical")),
+        }
+    }
+
+    /// Where a binding goes: `at sheet B2`, or a binding and up to two moves from it.
+    fn placement(&mut self) -> Parsed<Option<Placement>> {
+        if self.at_name("at") {
+            let pos = self.advance().pos;
+            let sheet = self.ident()?;
+            let cell_pos = self.pos();
+            let Some(word) = self.word() else {
+                return Err(self.unexpected("a cell, such as `B2`"));
+            };
+            let Some((row, column)) = parse_cell(&word) else {
+                return Err(Diagnostic::error(
+                    cell_pos,
+                    format!(
+                        "`{word}` is not a cell; a cell is one to three letters and a row, from A1 \
+                         to XFD{MAX_ROWS}, of {MAX_COLUMNS} columns"
+                    ),
+                ));
+            };
+            self.advance();
+            return Ok(Some(Placement::At {
+                sheet,
+                row,
+                column,
+                pos,
+            }));
+        }
+        let Token::Name(name) = self.peek().clone() else {
+            return Ok(None);
+        };
+        if is_keyword(&name) {
+            return Ok(None);
+        }
+        let reference = self.ident()?;
+        let mut moves: Vec<Move> = Vec::new();
+        loop {
+            let pos = self.pos();
+            let direction = match self.peek() {
+                Token::Name(name) => Direction::from_word(name),
+                _ => None,
+            };
+            let Some(direction) = direction else {
+                break;
+            };
+            self.advance();
+            let distance = match self.peek() {
+                Token::Number(..) => Some(self.integer("a whole number of cells")?),
+                _ => None,
+            };
+            let from = if self.at_name("from") {
+                self.advance();
+                let side = match self.peek() {
+                    Token::Name(name) => Side::from_word(name),
+                    _ => None,
+                };
+                let Some(side) = side else {
+                    return Err(self.unexpected("a side: east, west, north or south"));
+                };
+                self.advance();
+                Some(side)
+            } else {
+                None
+            };
+            if moves
+                .iter()
+                .any(|other| other.direction.is_horizontal() == direction.is_horizontal())
+            {
+                return Err(Diagnostic::error(
+                    pos,
+                    "a placement moves at most once along each axis: once left or right, and \
+                     once up or down",
+                ));
+            }
+            moves.push(Move {
+                direction,
+                distance,
+                from,
+                pos,
+            });
+        }
+        if moves.is_empty() {
+            return Err(self.unexpected(&format!(
+                "a move from `{}`, such as `{} down` or `{} right 2`",
+                reference.name, reference.name, reference.name
+            )));
+        }
+        Ok(Some(Placement::Beside { reference, moves }))
     }
 
     fn shape(&mut self) -> Parsed<ShapeSyntax> {
@@ -399,17 +530,8 @@ impl Parser {
         Ok(ShapeSyntax { rows, columns, pos })
     }
 
-    fn coord(&mut self) -> Parsed<Coord> {
-        let pos = self.expect(&Token::LParen, "`(` to start a cell, such as `(2, 4)`")?;
-        let row = self.size()?;
-        self.expect(&Token::Comma, "`,` between row and column")?;
-        let column = self.size()?;
-        self.expect(&Token::RParen, "`)`")?;
-        Ok(Coord { row, column, pos })
-    }
-
     fn offset(&mut self, pos: Pos) -> Parsed<Offset> {
-        self.expect(&Token::LBracket, "`[` after `from`")?;
+        self.expect(&Token::LBracket, "`[` after `start`")?;
         let row = self.integer("a whole number")?;
         self.expect(&Token::Comma, "`,`")?;
         let column = self.integer("a whole number")?;
@@ -533,7 +655,7 @@ impl Parser {
         if comparison_op(self.peek()).is_some() {
             return Err(Diagnostic::error(
                 self.pos(),
-                "comparisons do not chain; combine them with `if`",
+                "comparisons do not chain; combine them with `&&`",
             ));
         }
         Ok(binary(op, left, right, pos))
@@ -628,29 +750,50 @@ impl Parser {
     fn application(&mut self) -> Parsed<Expr> {
         if let Token::Name(name) = self.peek()
             && !is_keyword(name)
-            && starts_atom(self.peek_second())
         {
-            let func = self.ident()?;
-            let mut args = Vec::new();
-            while starts_atom(self.peek()) {
-                args.push(self.atom()?);
+            let axis_next = takes_axis(name)
+                && matches!(self.peek_second(), Token::Name(n) if Axis::from_word(n).is_some());
+            if axis_next || starts_atom(self.peek_second()) {
+                let func = self.ident()?;
+                let axis = match self.peek() {
+                    Token::Name(word) if takes_axis(&func.name) => Axis::from_word(word),
+                    _ => None,
+                };
+                if axis.is_some() {
+                    self.advance();
+                }
+                let mut args = Vec::new();
+                while starts_atom(self.peek()) {
+                    args.push(self.atom()?);
+                }
+                let seed = if func.name == "lag" && self.at_name("seed") {
+                    self.advance();
+                    Some(Box::new(self.atom()?))
+                } else {
+                    None
+                };
+                if self.at_name("from") && func.name == "lag" {
+                    return Err(Diagnostic::error(
+                        self.pos(),
+                        "a lag's first value follows `seed`, as in `lag 1 closing seed opening`",
+                    ));
+                }
+                return Ok(Expr {
+                    pos: func.pos,
+                    kind: ExprKind::Apply {
+                        func,
+                        axis,
+                        args,
+                        seed,
+                    },
+                });
             }
-            let seed = if func.name == "lag" && self.at_name("from") {
-                self.advance();
-                Some(Box::new(self.atom()?))
-            } else {
-                None
-            };
-            return Ok(Expr {
-                pos: func.pos,
-                kind: ExprKind::Apply { func, args, seed },
-            });
         }
         let atom = self.atom()?;
-        if self.at_name("from") {
+        if self.at_name("seed") {
             return Err(Diagnostic::error(
                 self.pos(),
-                "`from` gives the first value of a lag, as in `lag 1 closing from opening`",
+                "`seed` gives the first value of a lag, as in `lag 1 closing seed opening`",
             ));
         }
         Ok(atom)
@@ -661,27 +804,106 @@ impl Parser {
         let kind = match self.peek().clone() {
             Token::Number(value, text) => ExprKind::Number { value, text },
             Token::Str(value) => ExprKind::Str(value),
-            Token::Name(name) if name == "true" => ExprKind::Bool(true),
-            Token::Name(name) if name == "false" => ExprKind::Bool(false),
-            Token::Name(name) if !is_keyword(&name) => ExprKind::Name(name),
+            Token::Text(value) => ExprKind::Text(value),
+            Token::Word(word) if word == "True" => ExprKind::Bool(true),
+            Token::Word(word) if word == "False" => ExprKind::Bool(false),
+            Token::Word(word) => {
+                if *self.peek_second() == Token::LParen {
+                    return Err(Diagnostic::error(pos, app_function_hint(&word)));
+                }
+                if parse_cell(&word).is_some() {
+                    return Err(Diagnostic::error(
+                        pos,
+                        format!(
+                            "`{word}` reads as a cell; formulas in .yup name bindings, not cells"
+                        ),
+                    ));
+                }
+                ExprKind::Constructor(word)
+            }
+            Token::Name(name) if name == "true" || name == "false" => {
+                let word = if name == "true" { "True" } else { "False" };
+                return Err(Diagnostic::error(
+                    pos,
+                    format!("a logical is written `{word}`, in upper case"),
+                ));
+            }
+            Token::Name(name) if !is_keyword(&name) => {
+                self.advance();
+                let base = Expr {
+                    pos,
+                    kind: ExprKind::Name(name),
+                };
+                if *self.peek() == Token::LBrace {
+                    let fields = self.fields()?;
+                    return Ok(Expr {
+                        pos,
+                        kind: ExprKind::Update {
+                            base: Box::new(base),
+                            fields,
+                        },
+                    });
+                }
+                return Ok(base);
+            }
             Token::LParen => {
                 self.advance();
                 let inner = self.expr()?;
+                if *self.peek() == Token::Comma {
+                    return Err(Diagnostic::error(
+                        self.pos(),
+                        "a function takes its arguments without parentheses or commas, as in \
+                         `discount rate years`",
+                    ));
+                }
                 self.expect(&Token::RParen, "`)`")?;
                 return Ok(inner);
             }
             Token::LBracket => return self.list(),
-            Token::Text(_) => {
-                return Err(Diagnostic::error(
+            Token::LBrace => {
+                let fields = self.fields()?;
+                return Ok(Expr {
                     pos,
-                    "single quotes hold a label or a sheet name; a string value takes double \
-                     quotes",
-                ));
+                    kind: ExprKind::Record(fields),
+                });
             }
             _ => return Err(self.unexpected("a value")),
         };
         self.advance();
         Ok(Expr { pos, kind })
+    }
+
+    /// The fields of a record, `{ name = value, … }`, from its opening brace.
+    fn fields(&mut self) -> Parsed<Vec<Field>> {
+        self.expect(&Token::LBrace, "`{`")?;
+        let mut fields = Vec::new();
+        if *self.peek() == Token::RBrace {
+            self.advance();
+            return Ok(fields);
+        }
+        loop {
+            // A field may be named by a keyword, such as a border's `left`.
+            let name = match self.peek().clone() {
+                Token::Name(name) => {
+                    let pos = self.advance().pos;
+                    Ident { name, pos }
+                }
+                _ => return Err(self.unexpected("a field's name")),
+            };
+            self.expect(&Token::Equals, "`=` after the field's name")?;
+            let value = self.expr()?;
+            fields.push(Field { name, value });
+            match self.peek() {
+                Token::Comma => {
+                    self.advance();
+                }
+                Token::RBrace => {
+                    self.advance();
+                    return Ok(fields);
+                }
+                _ => return Err(self.unexpected("`,` or `}`")),
+            }
+        }
     }
 
     fn list(&mut self) -> Parsed<Expr> {
@@ -717,6 +939,25 @@ impl Parser {
     }
 }
 
+/// What to write instead of one of the spreadsheet app's functions, such as `SUM(…)`.
+fn app_function_hint(word: &str) -> String {
+    let lower = word.to_ascii_lowercase();
+    if word == "IF" {
+        return "`IF(…)` is the spreadsheet app's; in .yup it is `if a then b else c`".to_string();
+    }
+    match Builtin::lookup(&lower) {
+        Some(builtin) => format!(
+            "`{word}(…)` is the spreadsheet app's; in .yup functions are lower case and take \
+             their arguments without parentheses: `{}`",
+            builtin.usage()
+        ),
+        None => format!(
+            "`{word}(…)` is the spreadsheet app's; in .yup functions are lower case and take \
+             their arguments without parentheses, as in `round 2 x`"
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -730,10 +971,18 @@ mod tests {
     }
 
     fn definition(source: &str) -> Expr {
-        let program = parse(&format!("yup 0.1\nx = {source}\n")).expect("parses");
+        let program = parse(&format!("yup 0.2\nx = {source}\n")).expect("parses");
         match program.items.into_iter().next().map(|item| item.kind) {
             Some(ItemKind::Definition { expr, .. }) => expr,
             other => panic!("expected a definition, found {other:?}"),
+        }
+    }
+
+    fn signature(source: &str) -> Signature {
+        let program = parse(&format!("yup 0.2\n{source}\n")).expect("parses");
+        match program.items.into_iter().next().map(|item| item.kind) {
+            Some(ItemKind::Signature(sig)) => *sig,
+            other => panic!("expected a signature, found {other:?}"),
         }
     }
 
@@ -741,31 +990,60 @@ mod tests {
     fn the_first_line_gives_the_version() {
         assert_eq!(
             errors("x = 1\n"),
-            ["1:1: error: a .yup file starts with the line `yup 0.1`"]
+            ["1:1: error: a .yup file starts with the line `yup 0.2`"]
         );
         assert_eq!(
-            errors("yup 0.2\n"),
-            ["1:5: error: this reader reads .yup 0.1, not 0.2"]
+            errors("yup 0.1\n"),
+            ["1:5: error: this reader reads .yup 0.2, not 0.1"]
         );
     }
 
     #[test]
-    fn a_signature_takes_its_parts_in_any_order() {
-        let program =
-            parse("yup 0.1\ng : 'Growth' [1, n - 1] from [0, 1] Format \"0.0%\" @ (4, 5) Bold\n")
-                .expect("parses");
-        let ItemKind::Signature(sig) = &program.items[0].kind else {
-            panic!("expected a signature");
-        };
-        assert_eq!(sig.label.as_ref().map(|t| t.value.as_str()), Some("Growth"));
+    fn a_signature_takes_its_parts_in_order() {
+        let sig = signature(
+            "g : Formula Number percent [1, n - 1] start [0, 1] revenue down 1 right 1 from west",
+        );
+        assert_eq!(sig.role, Role::Formula);
+        assert!(matches!(sig.ty, Some((Type::Cell(CellType::Number), _))));
+        assert!(matches!(&sig.style, Some(StyleName::Named(style)) if style.name == "percent"));
         let shape = sig.shape.as_ref().expect("a shape");
         assert_eq!(shape.columns.constant, -1);
-        assert_eq!(shape.columns.terms[0].1.name, "n");
-        assert_eq!(sig.from.as_ref().map(|f| (f.row, f.column)), Some((0, 1)));
-        assert_eq!(sig.format.as_ref().map(|t| t.value.as_str()), Some("0.0%"));
-        assert_eq!(sig.at.as_ref().map(|c| c.row.constant), Some(4));
-        assert!(sig.bold.is_some());
-        assert!(sig.italic.is_none());
+        assert_eq!(sig.start.as_ref().map(|s| (s.row, s.column)), Some((0, 1)));
+        let Some(Placement::Beside { reference, moves }) = &sig.place else {
+            panic!("expected a placement beside another binding");
+        };
+        assert_eq!(reference.name, "revenue");
+        assert_eq!(moves.len(), 2);
+        assert_eq!(moves[1].from, Some(Side::West));
+        let at = signature("x : Label _ at forecast B2");
+        assert!(matches!(
+            at.place,
+            Some(Placement::At {
+                row: 2,
+                column: 2,
+                ..
+            })
+        ));
+        let lambda = signature("f : Lambda Number -> Number -> Number");
+        assert!(matches!(lambda.ty, Some((Type::Function(ref types), _)) if types.len() == 3));
+    }
+
+    #[test]
+    fn a_signature_explains_what_it_lacks() {
+        assert_eq!(
+            errors(
+                "yup 0.2\nx : Input\ny : Formula Number money revenue\nz : Formula _ x left 1 left 2\n"
+            ),
+            [
+                "2:5: error: `Input` is not a role; a signature starts with Formula, Value, Label, \
+                 Local, Lambda, Style, Sheet, Workbook or Size; a cell written in the file is a \
+                 `Value`, such as `rate : Value Number percent rate_label right 2`",
+                "3:33: error: expected a move from `revenue`, such as `revenue down` or `revenue \
+                 right 2`, found the end of the line",
+                "4:24: error: a placement moves at most once along each axis: once left or right, \
+                 and once up or down",
+            ]
+        );
     }
 
     #[test]
@@ -791,19 +1069,47 @@ mod tests {
     }
 
     #[test]
-    fn a_lag_takes_a_seed() {
-        let ExprKind::Apply { func, seed, .. } = definition("lag 1 closing from opening").kind
+    fn a_lag_takes_an_axis_and_a_seed() {
+        let ExprKind::Apply {
+            func, axis, seed, ..
+        } = definition("lag down 1 closing seed opening").kind
         else {
             panic!("expected an application");
         };
         assert_eq!(func.name, "lag");
+        assert_eq!(axis, Some(Axis::Down));
         assert!(matches!(seed.map(|s| s.kind), Some(ExprKind::Name(n)) if n == "opening"));
+        assert!(matches!(
+            definition("tail across x").kind,
+            ExprKind::Apply {
+                axis: Some(Axis::Across),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn records_and_updates_parse() {
+        let ExprKind::Update { base, fields } =
+            definition("money\n  { font = { bold = True }\n  , border = edges\n  }").kind
+        else {
+            panic!("expected an update");
+        };
+        assert!(matches!(base.kind, ExprKind::Name(ref n) if n == "money"));
+        assert_eq!(fields.len(), 2);
+        assert!(matches!(fields[0].value.kind, ExprKind::Record(_)));
+        let ExprKind::Record(fields) =
+            definition("{ left = { weight = Thin }, format = '0%' }").kind
+        else {
+            panic!("expected a record");
+        };
+        assert!(matches!(fields[1].value.kind, ExprKind::Text(ref t) if t == "0%"));
     }
 
     #[test]
     fn every_wrong_line_is_reported() {
         assert_eq!(
-            errors("yup 0.1\nx = \ny = 1 +\nz = (1 2)\n"),
+            errors("yup 0.2\nx = \ny = 1 +\nz = (1 2)\n"),
             [
                 "2:5: error: expected a value, found the end of the line",
                 "3:8: error: expected a value, found the end of the line",
@@ -813,18 +1119,33 @@ mod tests {
     }
 
     #[test]
+    fn the_spreadsheet_apps_habits_get_a_hint() {
+        assert_eq!(
+            errors("yup 0.2\na = discount(rate, years)\nb = SUM(x)\nc = B2 + 1\nd = true\n"),
+            [
+                "2:18: error: a function takes its arguments without parentheses or commas, as \
+                 in `discount rate years`",
+                "3:5: error: `SUM(…)` is the spreadsheet app's; in .yup functions are lower case \
+                 and take their arguments without parentheses: `sum x`",
+                "4:5: error: `B2` reads as a cell; formulas in .yup name bindings, not cells",
+                "5:5: error: a logical is written `True`, in upper case",
+            ]
+        );
+    }
+
+    #[test]
     fn comparisons_do_not_chain() {
         assert_eq!(
-            errors("yup 0.1\nx = a < b < c\n"),
-            ["2:11: error: comparisons do not chain; combine them with `if`"]
+            errors("yup 0.2\nx = a < b < c\n"),
+            ["2:11: error: comparisons do not chain; combine them with `&&`"]
         );
     }
 
     #[test]
     fn a_size_subtracts_only_numbers() {
         assert_eq!(
-            errors("yup 0.1\nx : [1, n - m]\n"),
-            ["2:13: error: a size can subtract a number but not a size variable"]
+            errors("yup 0.2\nx : Local [1, n - m]\n"),
+            ["2:19: error: a size can subtract a number but not a size variable"]
         );
     }
 }

@@ -13,7 +13,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cells::cell_name;
-use crate::lower::{Cell, SheetCells, Style, Value, Workbook, number};
+use crate::lower::{Cell, DEFAULT_FONT, DEFAULT_SIZE, SheetCells, Value, Workbook, number};
+use crate::style::{Alignment, Border, CellStyle, Font, Rgb};
 use crate::zip;
 
 const MAIN: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
@@ -24,9 +25,6 @@ const DYNAMIC_ARRAY: &str = "http://schemas.microsoft.com/office/spreadsheetml/2
 /// The extension that carries a dynamic array's properties, as [MS-XLSX] names it.
 const DYNAMIC_ARRAY_EXTENSION: &str = "{bdbb8cdc-fa1e-496e-a857-3c3f30c029c3}";
 const DECLARATION: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
-/// The typeface of the default font. A reader without it substitutes another; the standard's
-/// own examples use the same one.
-const FONT: &str = "Calibri";
 /// The first identifier free for a number format of the file's own; lower ones are built in.
 const FIRST_FORMAT_ID: usize = 164;
 
@@ -84,7 +82,10 @@ pub fn parts(workbook: &Workbook) -> Vec<(String, String)> {
             "xl/_rels/workbook.xml.rels".to_string(),
             contents.relationships(),
         ),
-        ("xl/styles.xml".to_string(), styles_xml(&workbook.styles)),
+        (
+            "xl/styles.xml".to_string(),
+            styles_xml(&workbook.styles, &workbook.font),
+        ),
     ];
     if contents.strings {
         parts.push(("xl/sharedStrings.xml".to_string(), strings.xml()));
@@ -92,10 +93,11 @@ pub fn parts(workbook: &Workbook) -> Vec<(String, String)> {
     if contents.metadata {
         parts.push(("xl/metadata.xml".to_string(), metadata_xml()));
     }
+    let active = active_sheet(workbook);
     for (index, sheet) in workbook.sheets.iter().enumerate() {
         parts.push((
             format!("xl/worksheets/sheet{}.xml", index + 1),
-            sheet_xml(sheet, index == 0, &strings),
+            sheet_xml(sheet, index == active, &strings),
         ));
     }
     parts
@@ -182,16 +184,34 @@ fn root_relationships() -> String {
     )
 }
 
+/// The sheet the workbook opens on: the first that is not hidden.
+fn active_sheet(workbook: &Workbook) -> usize {
+    workbook
+        .sheets
+        .iter()
+        .position(|sheet| !sheet.hidden)
+        .expect("Resolve keeps at least one sheet shown")
+}
+
 fn workbook_xml(workbook: &Workbook) -> String {
     let mut x = format!("{DECLARATION}<workbook xmlns=\"{MAIN}\" xmlns:r=\"{RELATIONSHIPS}\">");
-    x.push_str(
+    let active = match active_sheet(workbook) {
+        0 => String::new(),
+        index => format!(" activeTab=\"{index}\""),
+    };
+    x.push_str(&format!(
         "<bookViews><workbookView xWindow=\"0\" yWindow=\"0\" windowWidth=\"16000\" \
-         windowHeight=\"9000\"/></bookViews>",
-    );
+         windowHeight=\"9000\"{active}/></bookViews>"
+    ));
     x.push_str("<sheets>");
     for (index, sheet) in workbook.sheets.iter().enumerate() {
+        let state = if sheet.hidden {
+            " state=\"hidden\""
+        } else {
+            ""
+        };
         x.push_str(&format!(
-            "<sheet name=\"{}\" sheetId=\"{}\" r:id=\"rId{}\"/>",
+            "<sheet name=\"{}\" sheetId=\"{}\"{state} r:id=\"rId{}\"/>",
             escape(&sheet.name),
             index + 1,
             index + 1
@@ -225,27 +245,127 @@ fn position<T: PartialEq>(list: &mut Vec<T>, item: T) -> usize {
     }
 }
 
-fn styles_xml(styles: &[Style]) -> String {
-    // A font for each mix of bold, italic and input blue that a style uses, the plain one first.
-    let mut fonts = vec![(false, false, false)];
+/// A font as the file writes it, with the workbook's font for what the style leaves out
+/// (ECMA-376 Part 1, §18.8).
+fn font_xml(font: &Font, default: &Font) -> String {
+    let mut x = String::from("<font>");
+    if font.bold == Some(true) {
+        x.push_str("<b/>");
+    }
+    if font.italic == Some(true) {
+        x.push_str("<i/>");
+    }
+    let size = font.size.or(default.size).unwrap_or(DEFAULT_SIZE);
+    x.push_str(&format!("<sz val=\"{}\"/>", number(size)));
+    if let Some(color) = font.color {
+        x.push_str(&format!("<color rgb=\"{}\"/>", color.argb()));
+    }
+    let name = font
+        .name
+        .as_deref()
+        .or(default.name.as_deref())
+        .unwrap_or(DEFAULT_FONT);
+    x.push_str(&format!("<name val=\"{}\"/></font>", escape(name)));
+    x
+}
+
+/// A solid fill of one color.
+fn fill_xml(color: Rgb) -> String {
+    format!(
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"{}\"/></patternFill></fill>",
+        color.argb()
+    )
+}
+
+/// A border, its sides in the order the schema gives them.
+fn border_xml(border: &Border) -> String {
+    let mut x = String::from("<border>");
+    for (name, edge) in [
+        ("left", &border.left),
+        ("right", &border.right),
+        ("top", &border.top),
+        ("bottom", &border.bottom),
+    ] {
+        match edge {
+            None => x.push_str(&format!("<{name}/>")),
+            Some(edge) => {
+                x.push_str(&format!("<{name}"));
+                if let Some(weight) = edge.weight {
+                    x.push_str(&format!(" style=\"{weight}\""));
+                }
+                x.push('>');
+                if let Some(color) = edge.color {
+                    x.push_str(&format!("<color rgb=\"{}\"/>", color.argb()));
+                }
+                x.push_str(&format!("</{name}>"));
+            }
+        }
+    }
+    x.push_str("<diagonal/></border>");
+    x
+}
+
+/// A cell's alignment, if it has one.
+fn alignment_xml(align: &Alignment) -> Option<String> {
+    let mut attributes = String::new();
+    if let Some(horizontal) = align.horizontal {
+        attributes.push_str(&format!(" horizontal=\"{horizontal}\""));
+    }
+    if let Some(vertical) = align.vertical {
+        attributes.push_str(&format!(" vertical=\"{vertical}\""));
+    }
+    if let Some(wrap) = align.wrap {
+        attributes.push_str(&format!(" wrapText=\"{}\"", u8::from(wrap)));
+    }
+    if let Some(indent) = align.indent {
+        attributes.push_str(&format!(" indent=\"{indent}\""));
+    }
+    (!attributes.is_empty()).then(|| format!("<alignment{attributes}/>"))
+}
+
+fn styles_xml(styles: &[CellStyle], default: &Font) -> String {
+    // The workbook's own font comes first, as font 0, and the two reserved fills and an empty
+    // border likewise, so that a cell with no style of its own takes them.
+    let mut fonts = vec![font_xml(&Font::default(), default)];
+    let mut fills: Vec<String> = Vec::new();
+    let mut borders = vec![border_xml(&Border::default())];
     let mut formats: Vec<&str> = Vec::new();
     let mut xfs = String::new();
     for style in styles {
-        let font = position(&mut fonts, (style.bold, style.italic, style.input));
+        let font = position(&mut fonts, font_xml(&style.font, default));
+        // The first two fills are the ones the format reserves.
+        let fill = match style.fill {
+            Some(color) => 2 + position(&mut fills, fill_xml(color)),
+            None => 0,
+        };
+        let border = position(&mut borders, border_xml(&style.border));
         let format = match &style.format {
             Some(format) => FIRST_FORMAT_ID + position(&mut formats, format.as_str()),
             None => 0,
         };
-        let apply_format = if format == 0 {
-            ""
-        } else {
-            " applyNumberFormat=\"1\""
-        };
-        let apply_font = if font == 0 { "" } else { " applyFont=\"1\"" };
-        xfs.push_str(&format!(
-            "<xf numFmtId=\"{format}\" fontId=\"{font}\" fillId=\"0\" borderId=\"0\" \
-             xfId=\"0\"{apply_format}{apply_font}/>"
-        ));
+        let mut applied = String::new();
+        for (id, attribute) in [
+            (format, "applyNumberFormat"),
+            (font, "applyFont"),
+            (fill, "applyFill"),
+            (border, "applyBorder"),
+        ] {
+            if id != 0 {
+                applied.push_str(&format!(" {attribute}=\"1\""));
+            }
+        }
+        let alignment = alignment_xml(&style.align);
+        if alignment.is_some() {
+            applied.push_str(" applyAlignment=\"1\"");
+        }
+        let head = format!(
+            "<xf numFmtId=\"{format}\" fontId=\"{font}\" fillId=\"{fill}\" borderId=\"{border}\" \
+             xfId=\"0\"{applied}"
+        );
+        match alignment {
+            Some(alignment) => xfs.push_str(&format!("{head}>{alignment}</xf>")),
+            None => xfs.push_str(&format!("{head}/>")),
+        }
     }
     let mut x = format!("{DECLARATION}<styleSheet xmlns=\"{MAIN}\">");
     if !formats.is_empty() {
@@ -260,29 +380,24 @@ fn styles_xml(styles: &[Style]) -> String {
         x.push_str("</numFmts>");
     }
     x.push_str(&format!("<fonts count=\"{}\">", fonts.len()));
-    for (bold, italic, input) in &fonts {
-        x.push_str("<font>");
-        if *bold {
-            x.push_str("<b/>");
-        }
-        if *italic {
-            x.push_str("<i/>");
-        }
-        x.push_str("<sz val=\"11\"/>");
-        if *input {
-            x.push_str("<color rgb=\"FF0000FF\"/>");
-        }
-        x.push_str(&format!("<name val=\"{FONT}\"/><family val=\"2\"/></font>"));
+    for font in &fonts {
+        x.push_str(font);
     }
     x.push_str("</fonts>");
-    // The first two fills are the ones the format reserves.
-    x.push_str(
-        "<fills count=\"2\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill \
-         patternType=\"gray125\"/></fill></fills>",
-    );
-    x.push_str(
-        "<borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders>",
-    );
+    x.push_str(&format!(
+        "<fills count=\"{}\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill \
+         patternType=\"gray125\"/></fill>",
+        2 + fills.len()
+    ));
+    for fill in &fills {
+        x.push_str(fill);
+    }
+    x.push_str("</fills>");
+    x.push_str(&format!("<borders count=\"{}\">", borders.len()));
+    for border in &borders {
+        x.push_str(border);
+    }
+    x.push_str("</borders>");
     x.push_str(
         "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" \
          borderId=\"0\"/></cellStyleXfs>",
@@ -368,19 +483,37 @@ fn metadata_xml() -> String {
     )
 }
 
-fn sheet_xml(sheet: &SheetCells, first: bool, strings: &SharedStrings) -> String {
+fn sheet_xml(sheet: &SheetCells, active: bool, strings: &SharedStrings) -> String {
     let mut x = format!("{DECLARATION}<worksheet xmlns=\"{MAIN}\" xmlns:r=\"{RELATIONSHIPS}\">");
-    let selected = if first { " tabSelected=\"1\"" } else { "" };
+    // The sheet's properties come first in the worksheet, and its tab's color among them.
+    if let Some(color) = sheet.color {
+        x.push_str(&format!(
+            "<sheetPr><tabColor rgb=\"{}\"/></sheetPr>",
+            color.argb()
+        ));
+    }
+    let selected = if active { " tabSelected=\"1\"" } else { "" };
     x.push_str(&format!(
         "<sheetViews><sheetView{selected} workbookViewId=\"0\"/></sheetViews>"
     ));
     x.push_str("<sheetFormatPr defaultRowHeight=\"15\"/>");
-    if !sheet.widths.is_empty() {
+    let columns: BTreeSet<u32> = sheet
+        .widths
+        .keys()
+        .chain(sheet.column_styles.keys())
+        .copied()
+        .collect();
+    if !columns.is_empty() {
         x.push_str("<cols>");
-        for (column, width) in &sheet.widths {
-            x.push_str(&format!(
-                "<col min=\"{column}\" max=\"{column}\" width=\"{width:.2}\" customWidth=\"1\"/>"
-            ));
+        for column in columns {
+            x.push_str(&format!("<col min=\"{column}\" max=\"{column}\""));
+            if let Some(width) = sheet.widths.get(&column) {
+                x.push_str(&format!(" width=\"{width:.2}\" customWidth=\"1\""));
+            }
+            if let Some(style) = sheet.column_styles.get(&column) {
+                x.push_str(&format!(" style=\"{style}\""));
+            }
+            x.push_str("/>");
         }
         x.push_str("</cols>");
     }
@@ -411,7 +544,9 @@ fn sheet_xml(sheet: &SheetCells, first: bool, strings: &SharedStrings) -> String
 }
 
 fn cell_xml(name: String, cell: &Cell, strings: &SharedStrings) -> String {
-    let style = if cell.style == 0 {
+    // An empty cell is written only to give it a style, so it says its style even when that is
+    // the default.
+    let style = if cell.style == 0 && cell.value != Value::Empty {
         String::new()
     } else {
         format!(" s=\"{}\"", cell.style)
@@ -430,6 +565,7 @@ fn cell_xml(name: String, cell: &Cell, strings: &SharedStrings) -> String {
             "<c r=\"{name}\"{style} cm=\"1\"><f t=\"array\" ref=\"{name}\">{}</f></c>",
             escape(formula)
         ),
+        Value::Empty => format!("<c r=\"{name}\"{style}/>"),
     }
 }
 
@@ -517,26 +653,45 @@ mod tests {
                 style: 0,
             },
         );
+        let mut styled = CellStyle {
+            format: Some("0.0%\"x\"".to_string()),
+            fill: Some(Rgb {
+                red: 217,
+                green: 217,
+                blue: 217,
+            }),
+            ..CellStyle::default()
+        };
+        styled.font.bold = Some(true);
+        styled.border.top = Some(crate::style::Edge {
+            weight: Some("thin"),
+            color: None,
+        });
+        styled.align.horizontal = Some("center");
         Workbook {
             sheets: vec![SheetCells {
                 name: "Rates & 'more'".to_string(),
+                color: Some(Rgb {
+                    red: 255,
+                    green: 0,
+                    blue: 0,
+                }),
+                hidden: false,
                 cells,
                 row_styles: BTreeMap::from([(3, 1), (5, 1)]),
+                column_styles: BTreeMap::from([(7, 1)]),
                 widths: BTreeMap::from([(2, 20.0)]),
             }],
             names: vec![DefinedName {
                 name: "rate".to_string(),
                 refers_to: "'Rates & ''more'''!$D$2".to_string(),
             }],
-            styles: vec![
-                Style::default(),
-                Style {
-                    format: Some("0.0%\"x\"".to_string()),
-                    bold: false,
-                    italic: false,
-                    input: true,
-                },
-            ],
+            styles: vec![CellStyle::default(), styled],
+            font: Font {
+                name: Some(DEFAULT_FONT.to_string()),
+                size: Some(DEFAULT_SIZE),
+                ..Font::default()
+            },
         }
     }
 
@@ -590,6 +745,32 @@ mod tests {
             find("xl/styles.xml")
                 .contains("<numFmt numFmtId=\"164\" formatCode=\"0.0%&quot;x&quot;\"/>")
         );
+        assert!(sheet.starts_with(&format!(
+            "{DECLARATION}<worksheet xmlns=\"{MAIN}\" xmlns:r=\"{RELATIONSHIPS}\"><sheetPr><tabColor \
+             rgb=\"FFFF0000\"/></sheetPr>"
+        )));
+        assert!(sheet.contains(
+            "<cols><col min=\"2\" max=\"2\" width=\"20.00\" customWidth=\"1\"/><col min=\"7\" \
+             max=\"7\" style=\"1\"/></cols>"
+        ));
+    }
+
+    #[test]
+    fn styles_write_fonts_fills_borders_and_alignment() {
+        let styles = styles_xml(&workbook().styles, &workbook().font);
+        for part in [
+            "<fonts count=\"2\"><font><sz val=\"11\"/><name val=\"Calibri\"/></font><font><b/><sz \
+             val=\"11\"/><name val=\"Calibri\"/></font></fonts>",
+            "<fills count=\"3\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill \
+             patternType=\"gray125\"/></fill><fill><patternFill patternType=\"solid\"><fgColor \
+             rgb=\"FFD9D9D9\"/></patternFill></fill></fills>",
+            "<border><left/><right/><top style=\"thin\"></top><bottom/><diagonal/></border>",
+            "<xf numFmtId=\"164\" fontId=\"1\" fillId=\"2\" borderId=\"1\" xfId=\"0\" \
+             applyNumberFormat=\"1\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" \
+             applyAlignment=\"1\"><alignment horizontal=\"center\"/></xf>",
+        ] {
+            assert!(styles.contains(part), "{part}\n{styles}");
+        }
     }
 
     #[test]

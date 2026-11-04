@@ -1,49 +1,105 @@
-yup 0.1
+yup 0.2
 
 // A loan for an invented company, repaid on a schedule. Each year's opening balance is the year
-// before's closing balance: a balance carried from one period to the next. The horizon can be
+// before's closing balance: a value carried from one position to the next. The horizon can be
 // changed in the workbook, and the schedule resizes with it.
 
-sheet 'Inputs'
+workbook : Workbook
+workbook = { sheets = [inputs, loan] }
 
-amount : 'Amount borrowed' Input Format "#,##0"
+inputs : Sheet
+inputs = { name = 'Inputs' }
+
+loan : Sheet
+loan = { name = 'Loan', color = green }
+
+green : Style Color
+green = { red = 0, green = 128, blue = 0 }
+
+label : Style Cell
+label = { format = '@' }
+
+money : Style Cell
+money = { format = '#,##0' }
+
+percent : Style Cell
+percent = { format = '0.0%' }
+
+total : Style Cell
+total = money
+  { font   = { bold = True }
+  , border = { top = { weight = Thin }, bottom = { weight = Double } }
+  }
+
+// Inputs
+
+amount_label : Label label at inputs B2
+amount_label = "Amount borrowed"
+
+amount : Value Number money amount_label right 2
 amount = 12000
 
-rate : 'Interest rate' Input Format "0.0%"
+rate_label : Label label amount_label down
+rate_label = "Interest rate"
+
+rate : Value Number percent rate_label right 2
 rate = 0.065
 
-term : 'Term (years)' Input
+term_label : Label label rate_label down
+term_label = "Term (years)"
+
+term : Value Number _ term_label right 2
 term = 5
 
-horizon : 'Horizon (years)' Input
+horizon_label : Label label term_label down
+horizon_label = "Horizon (years)"
+
+horizon : Value Number _ horizon_label right 2
 horizon = 7
 
-sheet 'Loan'
+// Loan
 
-year : 'Year'
+year_label : Label label at loan B2
+year_label = "Year"
+
+year : Formula Number _ year_label right 2
 year = 1 .. horizon
 
-scheduled : 'Scheduled repayment' Format "#,##0"
+scheduled_label : Label label year_label down
+scheduled_label = "Scheduled repayment"
+
+scheduled : Formula Number money year down
 scheduled = if year <= term then amount / term else 0
 
-gap
-
-// These three depend on each other in a cycle, which `lag 1 closing from amount` breaks: the
+// These three depend on each other in a cycle, which `lag 1 closing seed amount` breaks: the
 // opening balance is the closing balance a year back, starting from the amount borrowed. The
 // workbook works the closing balance out with SCAN, one year at a time.
-opening : 'Opening balance' Format "#,##0"
-opening = lag 1 closing from amount
+opening_label : Label label scheduled_label down 2
+opening_label = "Opening balance"
 
-repayment : 'Repayment' Format "#,##0"
+opening : Formula Number money opening_label right 2
+opening = lag 1 closing seed amount
+
+repayment_label : Label label opening_label down
+repayment_label = "Repayment"
+
+repayment : Formula Number money opening down
 repayment = min scheduled opening
 
-closing : 'Closing balance' Format "#,##0" Bold
+closing_label : Label label repayment_label down
+closing_label = "Closing balance"
+
+closing : Formula Number total repayment down
 closing = opening - repayment
 
-gap
+interest_label : Label label closing_label down 2
+interest_label = "Interest"
 
-interest : 'Interest' Format "#,##0"
+interest : Formula Number money interest_label right 2
 interest = opening * rate
 
-total_interest : 'Interest over the horizon' Format "#,##0" Bold
+total_interest_label : Label label interest_label down
+total_interest_label = "Interest over the horizon"
+
+total_interest : Formula Number total total_interest_label right 2
 total_interest = sum interest

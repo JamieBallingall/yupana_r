@@ -1,12 +1,36 @@
-yup 0.1
+yup 0.2
 
-// The smallest useful .yup file: two inputs and a formula, on one sheet.
+// The smallest useful .yup file: two values and a formula, each with a label, on one sheet.
 
-price : 'Price' Input Format "0.00"
+workbook : Workbook
+workbook = { sheets = [sales] }
+
+sales : Sheet
+sales = { name = 'Sales' }
+
+label : Style Cell
+label = { format = '@' }
+
+two_places : Style Cell
+two_places = { format = '0.00' }
+
+total : Style Cell
+total = { format = '#,##0.00', font = { bold = True } }
+
+price_label : Label label at sales B2
+price_label = "Price"
+
+price : Value Number two_places price_label right 2
 price = 4.5
 
-quantity : 'Quantity' Input
+quantity_label : Label label price_label down
+quantity_label = "Quantity"
+
+quantity : Value Number _ quantity_label right 2
 quantity = 120
 
-revenue : 'Revenue' Format "#,##0.00" Bold
+revenue_label : Label label quantity_label down
+revenue_label = "Revenue"
+
+revenue : Formula Number total revenue_label right 2
 revenue = price * quantity

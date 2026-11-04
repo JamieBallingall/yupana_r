@@ -1,8 +1,11 @@
-//! Step 2, Resolve: what each name refers to, which sheet each item belongs to, and the order
-//! in which definitions depend on each other.
+//! Step 2, Resolve: what each name refers to, how each binding looks and where it goes, and the
+//! order in which definitions depend on each other.
 //!
-//! A binding is shown in the workbook when its signature has a label. Without a label it is
-//! local: it has no cells of its own, and its formula is written into the formulas that use it.
+//! Every binding is a signature and, directly below it, its definition. The signature's role
+//! says what the binding becomes; nothing is inferred from what a signature leaves out. Two
+//! graphs come out of a file: the formulas' graph from the definitions, and the layout's graph
+//! from the placements in the signatures. Each is checked for cycles on its own, and the order
+//! of the file means nothing to either.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -12,36 +15,54 @@ use crate::csv::{self, Table};
 use crate::diagnostic::{Diagnostic, Pos};
 use crate::functions::Builtin;
 use crate::printer::expression;
-use crate::syntax::{Expr, ExprKind, Ident, ItemKind, Program, Signature, SizeKind, Text};
-
-/// The sheet that holds items written before any `sheet` statement.
-pub const DEFAULT_SHEET: &str = "Sheet1";
+use crate::style::{self, CellStyle, Declared, Evaluator, Font, Rgb, Value};
+use crate::syntax::{
+    CellType, Expr, ExprKind, Field, Ident, ItemKind, Move, Placement, Program, Role, Signature,
+    SizeKind, StyleName, StyleType, Type,
+};
 
 /// The most characters a cell can hold, from the spreadsheet app's published limits.
 const MAX_CELL_TEXT: usize = 32_767;
 
-/// What a file's names refer to, and how its items are laid out on sheets.
+/// What a file's names refer to, how its cells look, and where they go.
 #[derive(Clone, Debug)]
 pub struct Model {
-    pub sheets: Vec<Sheet>,
     pub bindings: Vec<Binding>,
     pub sizes: Vec<SizeDecl>,
     pub symbols: BTreeMap<String, Symbol>,
-    /// Every binding, each after the bindings it uses.
+    /// Every binding that formulas can use, each after the bindings it uses.
     pub order: Vec<usize>,
-    /// The table each input defined by `csv "file.csv"` reads, by binding.
+    /// Every binding with cells of its own, each after the binding it is placed beside.
+    pub layout: Vec<usize>,
+    /// The table each value defined by `csv "file.csv"` reads, by binding.
     pub tables: BTreeMap<usize, Table>,
-    /// The balances carried from one period to the next.
+    /// The values carried from one position to the next.
     pub recurrences: Vec<Recurrence>,
+    /// The sheets, in the order of their tabs.
+    pub sheets: Vec<Sheet>,
+    /// The workbook's own font: only its name and size are ever set.
+    pub font: Font,
 }
 
-/// Bindings that depend on each other in a cycle, broken by `lag 1 state from seed`: a balance
-/// carried from one period to the next. Each period's value depends on the period before.
+/// A worksheet and its settings.
+#[derive(Clone, Debug)]
+pub struct Sheet {
+    /// The `Sheet` binding.
+    pub binding: usize,
+    pub name: String,
+    pub color: Option<Rgb>,
+    pub hidden: bool,
+    /// The sheet's font, which cascades to its cells: only its name and size are ever set.
+    pub font: Font,
+}
+
+/// Bindings that depend on each other in a cycle, broken by `lag 1 state seed first`: a value
+/// carried from one position to the next. Each position depends on the one before.
 #[derive(Clone, Debug)]
 pub struct Recurrence {
-    /// The bindings in the cycle, each after the others it uses in the same period.
+    /// The bindings in the cycle, each after the others it uses at the same position.
     pub members: Vec<usize>,
-    /// The binding carried from one period to the next.
+    /// The binding carried from one position to the next.
     pub state: usize,
 }
 
@@ -52,10 +73,27 @@ impl Model {
             .iter()
             .find(|recurrence| recurrence.members.contains(&binding))
     }
+
+    /// A binding's signature.
+    pub fn signature<'p>(&self, program: &'p Program, binding: usize) -> &'p Signature {
+        match &program.items[self.bindings[binding].signature].kind {
+            ItemKind::Signature(sig) => sig,
+            _ => unreachable!("a signature index points at a signature"),
+        }
+    }
+
+    /// A binding's definition.
+    pub fn definition<'p>(&self, program: &'p Program, binding: usize) -> &'p Expr {
+        match &program.items[self.bindings[binding].definition].kind {
+            ItemKind::Definition { expr, .. } => expr,
+            _ => unreachable!("a binding's definition index points at a definition"),
+        }
+    }
 }
 
-/// A binding that a definition uses. A use inside `lag 1 x from seed`, in `x`, is delayed: it
-/// reads earlier periods only, so it does not stop a cycle being worked out period by period.
+/// A binding that a definition uses. A use inside `lag 1 x seed first`, in `x`, is delayed: it
+/// reads earlier positions only, so it does not stop a cycle being worked out position by
+/// position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Use {
     binding: usize,
@@ -69,53 +107,39 @@ pub enum Symbol {
     Size(usize),
 }
 
-/// A sheet and the items laid out on it, in order.
+/// Where a binding's cells go, with the names in its placement resolved.
 #[derive(Clone, Debug)]
-pub struct Sheet {
-    pub name: String,
-    pub pos: Pos,
-    /// The index of the `sheet` statement, or `None` for the sheet that holds items written
-    /// before any `sheet` statement.
-    pub statement: Option<usize>,
-    pub items: Vec<SheetItem>,
+pub enum Place {
+    /// A cell of a sheet, by the sheet's index in tab order.
+    At { sheet: usize, row: i64, column: i64 },
+    /// Beside another binding.
+    Beside { reference: usize, moves: Vec<Move> },
 }
 
-/// An item in a sheet's layout: a heading or a gap (by item index), or a binding.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SheetItem {
-    Heading(usize),
-    Gap(usize),
-    Binding(usize),
-}
-
-/// Whether a binding has cells of its own.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Role {
-    /// Shown with its label, its values computed by a formula.
-    Shown,
-    /// Shown with its label, its values written into the cells for the workbook's user to
-    /// change.
-    Input,
-    /// Not shown; its formula is written into the formulas that use it.
-    Local,
-    /// A function of its parameters, written to the workbook as a LAMBDA in a defined name.
-    Function,
-}
-
-/// A name defined by `name = …`.
+/// A name defined by a signature and the definition below it.
 #[derive(Clone, Debug)]
 pub struct Binding {
     pub name: String,
+    /// Where the definition is.
     pub pos: Pos,
-    /// The index of the signature item, if there is one.
-    pub signature: Option<usize>,
+    /// The index of the signature item.
+    pub signature: usize,
     /// The index of the definition item.
     pub definition: usize,
     pub role: Role,
-    /// The sheet a shown binding is laid out on.
-    pub sheet: Option<usize>,
-    /// A function's parameters; empty for any other binding.
+    /// A lambda's parameters; empty for any other binding.
     pub params: Vec<String>,
+    /// What each cell holds, as the signature says, for a formula, a value or a local.
+    pub declared: Option<CellType>,
+    /// A lambda's parameters' types and its result's.
+    pub function: Vec<CellType>,
+    /// The sheet the binding's cells are on, by its index in tab order.
+    pub sheet: Option<usize>,
+    /// Where the binding's cells go.
+    pub place: Option<Place>,
+    /// How the binding's cells look, before the font's name and size cascade from the sheet and
+    /// the workbook.
+    pub style: Option<CellStyle>,
 }
 
 /// A size variable declared by `name : Size …`.
@@ -128,234 +152,155 @@ pub struct SizeDecl {
     pub value: Option<i64>,
 }
 
-impl Model {
-    /// A binding's signature, if it has one.
-    pub fn signature<'p>(&self, program: &'p Program, binding: usize) -> Option<&'p Signature> {
-        let index = self.bindings[binding].signature?;
-        Some(signature_at(program, index))
-    }
-
-    /// A binding's definition.
-    pub fn definition<'p>(&self, program: &'p Program, binding: usize) -> &'p Expr {
-        match &program.items[self.bindings[binding].definition].kind {
-            ItemKind::Definition { expr, .. } => expr,
-            _ => unreachable!("a binding's definition index points at a definition"),
-        }
-    }
-}
-
-fn signature_at(program: &Program, index: usize) -> &Signature {
-    match &program.items[index].kind {
-        ItemKind::Signature(sig) => sig,
-        _ => unreachable!("a signature index points at a signature"),
-    }
-}
-
 fn twice(name: &str, pos: Pos, first: Pos) -> Diagnostic {
     Diagnostic::error(pos, format!("`{name}` is already declared at {first}"))
+}
+
+/// What a signature is waiting for below it.
+enum Pending {
+    /// The definition of the binding whose signature is at this item.
+    Definition {
+        index: usize,
+        name: String,
+        /// Whether a blank line has come between.
+        apart: bool,
+    },
+    /// Nothing: but a definition of this unknown size below would be wrong.
+    Unknown(String),
+}
+
+/// A signature with its definition, as the first pass pairs them.
+struct Paired {
+    signature: usize,
+    definition: usize,
 }
 
 /// Resolves every name in `program`.
 pub fn resolve(program: &Program, inputs: &Inputs) -> Result<Model, Vec<Diagnostic>> {
     let mut errors = Vec::new();
-
-    // Each name is declared once: as a size, or by a signature, a definition or both.
-    let mut sizes: Vec<SizeDecl> = Vec::new();
-    let mut size_index: BTreeMap<String, usize> = BTreeMap::new();
-    let mut signatures: BTreeMap<String, usize> = BTreeMap::new();
-    let mut definitions: BTreeMap<String, usize> = BTreeMap::new();
-    for (index, item) in program.items.iter().enumerate() {
-        match &item.kind {
-            ItemKind::Size { name, kind } => {
-                errors.extend(name_error(&name.name, name.pos));
-                if let Some(&other) = size_index.get(&name.name) {
-                    errors.push(twice(&name.name, name.pos, sizes[other].pos));
-                } else if let Some(&other) = signatures.get(&name.name) {
-                    errors.push(twice(&name.name, name.pos, program.items[other].pos));
-                } else {
-                    size_index.insert(name.name.clone(), sizes.len());
-                    sizes.push(SizeDecl {
-                        name: name.name.clone(),
-                        pos: name.pos,
-                        kind: *kind,
-                        value: None,
-                    });
-                }
-            }
-            ItemKind::Signature(sig) => {
-                let name = &sig.name;
-                errors.extend(name_error(&name.name, name.pos));
-                if let Some(&other) = signatures.get(&name.name) {
-                    errors.push(twice(&name.name, name.pos, program.items[other].pos));
-                } else if size_index.contains_key(&name.name) {
-                    errors.push(Diagnostic::error(
-                        name.pos,
-                        format!(
-                            "`{0}` is a size variable; it takes a value, such as `{0} = 4`, \
-                             not a signature",
-                            name.name
-                        ),
-                    ));
-                } else {
-                    signatures.insert(name.name.clone(), index);
-                }
-                errors.extend(sig.label.as_ref().and_then(text_error));
-                if let Some(format) = &sig.format
-                    && let Some(problem) = format_problem(&format.value)
-                {
-                    errors.push(Diagnostic::error(format.pos, problem));
-                }
-            }
-            ItemKind::Definition { name, .. } => {
-                errors.extend(name_error(&name.name, name.pos));
-                if let Some(&other) = definitions.get(&name.name) {
-                    errors.push(Diagnostic::error(
-                        name.pos,
-                        format!(
-                            "`{}` is already defined at {}",
-                            name.name, program.items[other].pos
-                        ),
-                    ));
-                } else {
-                    definitions.insert(name.name.clone(), index);
-                }
-            }
-            ItemKind::Heading { text, .. } => errors.extend(text_error(text)),
-            _ => {}
-        }
-    }
-
-    // A fixed size takes its value from a definition; an unknown size never has one.
-    for size in &mut sizes {
-        let definition = definitions.remove(&size.name);
-        match (size.kind, definition) {
-            (SizeKind::Fixed, Some(index)) => {
-                let ItemKind::Definition { expr, .. } = &program.items[index].kind else {
-                    unreachable!("a definition index points at a definition");
-                };
-                match expr.integer() {
-                    Some(value) if value >= 1 => size.value = Some(value),
-                    _ => errors.push(Diagnostic::error(
-                        expr.pos,
-                        format!(
-                            "a fixed size is a whole number, at least 1, such as `{} = 4`",
-                            size.name
-                        ),
-                    )),
-                }
-            }
-            (SizeKind::Fixed, None) => errors.push(Diagnostic::error(
-                size.pos,
-                format!(
-                    "the fixed size `{0}` needs a value, such as `{0} = 4`",
-                    size.name
-                ),
-            )),
-            (SizeKind::Unknown, Some(index)) => errors.push(Diagnostic::error(
-                program.items[index].pos,
-                format!(
-                    "`{}` is an unknown size: the workbook decides its value, so it cannot be \
-                     given one here",
-                    size.name
-                ),
-            )),
-            (SizeKind::Unknown, None) => {}
-        }
-    }
+    let (pairs, mut sizes) = pair(program, &mut errors);
 
     let mut symbols: BTreeMap<String, Symbol> = BTreeMap::new();
     for (index, size) in sizes.iter().enumerate() {
         symbols.insert(size.name.clone(), Symbol::Size(index));
     }
-
-    // Bindings are numbered in the order their definitions appear.
-    let mut in_order: Vec<(usize, String)> = definitions
-        .iter()
-        .map(|(name, &index)| (index, name.clone()))
-        .collect();
-    in_order.sort();
     let mut bindings: Vec<Binding> = Vec::new();
-    for (index, name) in in_order {
-        let ItemKind::Definition { params, .. } = &program.items[index].kind else {
-            unreachable!("a definition index points at a definition");
+    for paired in &pairs {
+        let ItemKind::Signature(sig) = &program.items[paired.signature].kind else {
+            unreachable!("a pair starts with a signature");
         };
-        let signature = signatures.get(&name).copied();
-        let sig = signature.map(|index| signature_at(program, index));
-        let role = match sig {
-            _ if !params.is_empty() => Role::Function,
-            Some(sig) if sig.input.is_some() => Role::Input,
-            Some(sig) if sig.label.is_some() => Role::Shown,
-            _ => Role::Local,
+        let ItemKind::Definition { params, .. } = &program.items[paired.definition].kind else {
+            unreachable!("a pair ends with a definition");
         };
-        if let Some(sig) = sig {
-            errors.extend(role_errors(sig, role));
+        let name = sig.name.name.clone();
+        if let Some(Symbol::Binding(other)) = symbols.get(&name) {
+            errors.push(twice(
+                &name,
+                sig.name.pos,
+                program.items[bindings[*other].signature].pos,
+            ));
+            continue;
         }
-        for (i, param) in params.iter().enumerate() {
-            errors.extend(name_error(&param.name, param.pos));
-            if params[..i].iter().any(|other| other.name == param.name) {
-                errors.push(Diagnostic::error(
-                    param.pos,
-                    format!("the parameter `{}` is given twice", param.name),
-                ));
-            }
+        if symbols.contains_key(&name) {
+            errors.push(Diagnostic::error(
+                sig.name.pos,
+                format!("`{name}` is already declared as a size"),
+            ));
+            continue;
         }
+        errors.extend(signature_errors(sig, params));
+        let (declared, function) = match &sig.ty {
+            Some((Type::Cell(ty), _)) => (Some(*ty), Vec::new()),
+            Some((Type::Function(types), _)) => (None, types.clone()),
+            _ => (None, Vec::new()),
+        };
         symbols.insert(name.clone(), Symbol::Binding(bindings.len()));
         bindings.push(Binding {
             name,
-            pos: program.items[index].pos,
-            signature,
-            definition: index,
-            role,
-            sheet: None,
+            pos: program.items[paired.definition].pos,
+            signature: paired.signature,
+            definition: paired.definition,
+            role: sig.role,
             params: params.iter().map(|param| param.name.clone()).collect(),
+            declared,
+            function,
+            sheet: None,
+            place: None,
+            style: None,
         });
     }
-    for (name, &index) in &signatures {
-        if !definitions.contains_key(name) {
-            errors.push(Diagnostic::error(
-                program.items[index].pos,
-                format!("`{name}` has a signature but no definition, such as `{name} = …`"),
-            ));
+    fixed_sizes(program, &pairs, &mut sizes, &mut errors);
+
+    // Styles are worked out first: placed bindings, sheets and the workbook name them.
+    let declared: Vec<Declared> = bindings
+        .iter()
+        .filter(|binding| binding.role == Role::Style)
+        .map(|binding| {
+            let sig = signature_of(program, binding);
+            let ty = match sig.ty {
+                Some((Type::Style(ty), _)) => ty,
+                _ => unreachable!("the parser gives every style a type"),
+            };
+            Declared {
+                name: &sig.name.name,
+                ty,
+                expr: definition_of(program, binding),
+            }
+        })
+        .collect();
+    let mut styles = Evaluator::new(declared);
+    styles.check_all();
+    for binding in &mut bindings {
+        if !binding.role.is_placed() {
+            continue;
         }
+        binding.style = match &signature_of(program, binding).style {
+            Some(StyleName::Named(name)) => styles
+                .named(&name.name, StyleType::Cell, name.pos)
+                .map(|value| style::cell(&value)),
+            _ => Some(CellStyle::default()),
+        };
     }
 
-    let sheets = lay_out(program, &symbols, &mut bindings, &mut errors);
+    let (sheets, font) =
+        sheets_and_workbook(program, &bindings, &symbols, &mut styles, &mut errors);
+    errors.append(&mut styles.errors);
+    let layout = places(program, &symbols, &sheets, &mut bindings, &mut errors);
 
-    // An input defined as `csv "file.csv"` is a table, read from the file the caller gave.
+    // A value defined as `csv "file.csv"` is a table, read from the file the caller gave.
     let mut tables = BTreeMap::new();
     let mut table_bindings = BTreeSet::new();
     for (index, binding) in bindings.iter().enumerate() {
-        let ItemKind::Definition { expr, .. } = &program.items[binding.definition].kind else {
-            unreachable!("a binding's definition index points at a definition");
-        };
-        let Some((file, pos)) = csv_file(expr) else {
-            continue;
-        };
-        if binding.role != Role::Input {
-            continue;
-        }
-        table_bindings.insert(index);
-        match inputs.get(file) {
-            None => errors.push(Diagnostic::error(
-                pos,
-                format!("the input file `{file}` was not given"),
-            )),
-            Some(text) => match csv::parse(text) {
-                Ok(table) => {
-                    tables.insert(index, table);
+        let expr = definition_of(program, binding);
+        match binding.role {
+            Role::Value => {
+                if let Some((file, pos)) = csv_file(expr) {
+                    table_bindings.insert(index);
+                    match inputs.get(file) {
+                        None => errors.push(Diagnostic::error(
+                            pos,
+                            format!("the input file `{file}` was not given"),
+                        )),
+                        Some(text) => match csv::parse(text) {
+                            Ok(table) => {
+                                tables.insert(index, table);
+                            }
+                            Err(error) => errors.push(error.in_file(file)),
+                        },
+                    }
+                } else {
+                    errors.extend(value_error(expr));
                 }
-                Err(error) => errors.push(error.in_file(file)),
-            },
+            }
+            Role::Label => errors.extend(label_error(expr)),
+            _ => {}
         }
     }
 
     let mut uses: Vec<Vec<Use>> = Vec::with_capacity(bindings.len());
-    for (index, binding) in bindings.iter().enumerate() {
-        let ItemKind::Definition { expr, .. } = &program.items[binding.definition].kind else {
-            unreachable!("a binding's definition index points at a definition");
-        };
+    for binding in &bindings {
         let mut found = Vec::new();
-        if !table_bindings.contains(&index) {
+        if matches!(binding.role, Role::Formula | Role::Local | Role::Lambda) {
             let scope = Scope {
                 symbols: &symbols,
                 sizes: &sizes,
@@ -364,15 +309,15 @@ pub fn resolve(program: &Program, inputs: &Inputs) -> Result<Model, Vec<Diagnost
                 tables: &tables,
                 table_bindings: &table_bindings,
             };
-            scope.resolve_expr(expr, false, &mut found, &mut errors);
-            if binding.role == Role::Input
-                && let Err(error) = check_input(expr, binding.pos)
-            {
-                errors.push(error);
-            }
+            scope.resolve_expr(
+                definition_of(program, binding),
+                false,
+                &mut found,
+                &mut errors,
+            );
         }
-        // A function's uses are never delayed, so a cycle through a function stays an error.
-        if binding.role == Role::Function {
+        // A lambda's uses are never delayed, so a cycle through a lambda stays an error.
+        if binding.role == Role::Lambda {
             for found in &mut found {
                 found.delayed = false;
             }
@@ -386,6 +331,15 @@ pub fn resolve(program: &Program, inputs: &Inputs) -> Result<Model, Vec<Diagnost
             (Vec::new(), Vec::new())
         }
     };
+    let order: Vec<usize> = order
+        .into_iter()
+        .filter(|&binding| {
+            matches!(
+                bindings[binding].role,
+                Role::Formula | Role::Value | Role::Local | Role::Lambda
+            )
+        })
+        .collect();
     let mut recurrences = Vec::new();
     for members in cycles {
         match recurrence(program, &symbols, &bindings, &uses, members) {
@@ -396,20 +350,249 @@ pub fn resolve(program: &Program, inputs: &Inputs) -> Result<Model, Vec<Diagnost
 
     if errors.is_empty() {
         Ok(Model {
-            sheets,
             bindings,
             sizes,
             symbols,
             order,
+            layout,
             tables,
             recurrences,
+            sheets,
+            font,
         })
     } else {
         Err(errors)
     }
 }
 
-/// The file an input reads, and where its name is written, when the definition is
+fn signature_of<'p>(program: &'p Program, binding: &Binding) -> &'p Signature {
+    match &program.items[binding.signature].kind {
+        ItemKind::Signature(sig) => sig,
+        _ => unreachable!("a signature index points at a signature"),
+    }
+}
+
+fn definition_of<'p>(program: &'p Program, binding: &Binding) -> &'p Expr {
+    match &program.items[binding.definition].kind {
+        ItemKind::Definition { expr, .. } => expr,
+        _ => unreachable!("a binding's definition index points at a definition"),
+    }
+}
+
+/// Pairs each signature with the definition directly below it, and collects the sizes.
+fn pair(program: &Program, errors: &mut Vec<Diagnostic>) -> (Vec<Paired>, Vec<SizeDecl>) {
+    let mut pairs = Vec::new();
+    let mut sizes: Vec<SizeDecl> = Vec::new();
+    let mut pending: Option<Pending> = None;
+    let unpaired = |pending: &Option<Pending>, errors: &mut Vec<Diagnostic>| {
+        if let Some(Pending::Definition { index, name, .. }) = pending {
+            errors.push(Diagnostic::error(
+                program.items[*index].pos,
+                format!(
+                    "`{name}` has a signature but no definition below it, such as `{name} = …`"
+                ),
+            ));
+        }
+    };
+    for (index, item) in program.items.iter().enumerate() {
+        match &item.kind {
+            ItemKind::Blank => {
+                if let Some(Pending::Definition { apart, .. }) = &mut pending {
+                    *apart = true;
+                }
+            }
+            ItemKind::Comment(_) => {}
+            ItemKind::Size { name, kind } => {
+                unpaired(&pending, errors);
+                errors.extend(name_error(&name.name, name.pos));
+                if let Some(other) = sizes.iter().find(|size| size.name == name.name) {
+                    errors.push(twice(&name.name, name.pos, other.pos));
+                }
+                sizes.push(SizeDecl {
+                    name: name.name.clone(),
+                    pos: name.pos,
+                    kind: *kind,
+                    value: None,
+                });
+                pending = Some(match kind {
+                    SizeKind::Fixed => Pending::Definition {
+                        index,
+                        name: name.name.clone(),
+                        apart: false,
+                    },
+                    SizeKind::Unknown => Pending::Unknown(name.name.clone()),
+                });
+            }
+            ItemKind::Signature(sig) => {
+                unpaired(&pending, errors);
+                errors.extend(name_error(&sig.name.name, sig.name.pos));
+                pending = Some(Pending::Definition {
+                    index,
+                    name: sig.name.name.clone(),
+                    apart: false,
+                });
+            }
+            ItemKind::Definition { name, .. } => {
+                match pending.take() {
+                    Some(Pending::Definition {
+                        index: signature,
+                        name: expected,
+                        apart,
+                    }) if expected == name.name => {
+                        if apart {
+                            errors.push(Diagnostic::error(
+                                item.pos,
+                                format!(
+                                    "the definition of `{expected}` follows its signature \
+                                     directly, with only comments between"
+                                ),
+                            ));
+                        }
+                        // A fixed size's value is read by `fixed_sizes`.
+                        if matches!(program.items[signature].kind, ItemKind::Signature(_)) {
+                            pairs.push(Paired {
+                                signature,
+                                definition: index,
+                            });
+                        }
+                    }
+                    Some(Pending::Definition { name: expected, .. }) => {
+                        errors.push(Diagnostic::error(
+                            item.pos,
+                            format!(
+                                "this defines `{}`, but the signature above it is of `{expected}`; \
+                                 a definition follows its own signature",
+                                name.name
+                            ),
+                        ));
+                    }
+                    Some(Pending::Unknown(size)) if size == name.name => {
+                        errors.push(Diagnostic::error(
+                            item.pos,
+                            format!(
+                                "`{size}` is an unknown size: the workbook decides its value, so \
+                                 it cannot be given one here"
+                            ),
+                        ));
+                    }
+                    _ => errors.push(Diagnostic::error(
+                        item.pos,
+                        format!(
+                            "`{0}` has no signature above it; a binding is a signature, such as \
+                             `{0} : Formula Number _ …`, and then its definition",
+                            name.name
+                        ),
+                    )),
+                }
+            }
+        }
+    }
+    unpaired(&pending, errors);
+    (pairs, sizes)
+}
+
+/// Reads each fixed size's value from the definition below its declaration.
+fn fixed_sizes(
+    program: &Program,
+    pairs: &[Paired],
+    sizes: &mut [SizeDecl],
+    errors: &mut Vec<Diagnostic>,
+) {
+    let paired_definitions: BTreeSet<usize> = pairs.iter().map(|pair| pair.definition).collect();
+    for (index, item) in program.items.iter().enumerate() {
+        let ItemKind::Definition { name, expr, .. } = &item.kind else {
+            continue;
+        };
+        if paired_definitions.contains(&index) {
+            continue;
+        }
+        let Some(size) = sizes
+            .iter_mut()
+            .find(|size| size.name == name.name && size.kind == SizeKind::Fixed)
+        else {
+            continue;
+        };
+        match expr.integer() {
+            Some(value) if value >= 1 => size.value = Some(value),
+            _ => errors.push(Diagnostic::error(
+                expr.pos,
+                format!(
+                    "a fixed size is a whole number, at least 1, such as `{} = 4`",
+                    size.name
+                ),
+            )),
+        }
+    }
+    for size in sizes.iter() {
+        if size.kind == SizeKind::Fixed && size.value.is_none() {
+            let reported = errors.iter().any(|error| error.pos == size.pos);
+            if !reported {
+                errors.push(Diagnostic::error(
+                    size.pos,
+                    format!(
+                        "the fixed size `{0}` needs a value, such as `{0} = 4`",
+                        size.name
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+/// What is wrong with a signature, given its definition's parameters.
+fn signature_errors(sig: &Signature, params: &[Ident]) -> Vec<Diagnostic> {
+    let mut errors = Vec::new();
+    let name = &sig.name.name;
+    match sig.role {
+        Role::Lambda => {
+            let types = match &sig.ty {
+                Some((Type::Function(types), _)) => types.len(),
+                _ => unreachable!("the parser gives every lambda a type"),
+            };
+            if params.len() + 1 != types {
+                let wanted = types - 1;
+                let plural = if wanted == 1 { "" } else { "s" };
+                errors.push(Diagnostic::error(
+                    sig.name.pos,
+                    format!(
+                        "`{name}`'s type names {wanted} parameter{plural}, and its definition \
+                         gives {}",
+                        params.len()
+                    ),
+                ));
+            }
+            for (i, param) in params.iter().enumerate() {
+                errors.extend(name_error(&param.name, param.pos));
+                if params[..i].iter().any(|other| other.name == param.name) {
+                    errors.push(Diagnostic::error(
+                        param.pos,
+                        format!("the parameter `{}` is given twice", param.name),
+                    ));
+                }
+            }
+        }
+        _ if !params.is_empty() => errors.push(Diagnostic::error(
+            params[0].pos,
+            format!(
+                "`{name}` is a {}, and only a lambda takes parameters",
+                sig.role.word()
+            ),
+        )),
+        _ => {}
+    }
+    if sig.role.is_placed() && sig.place.is_none() {
+        errors.push(Diagnostic::error(
+            sig.name.pos,
+            format!(
+                "`{name}` needs a place: a cell, as in `at forecast B2`, or beside another \
+                 binding, as in `… {name}_label right 2`"
+            ),
+        ));
+    }
+    errors
+}
+
+/// The file a value reads, and where its name is written, when the definition is
 /// `csv "file.csv"`.
 fn csv_file(expr: &Expr) -> Option<(&str, Pos)> {
     let ExprKind::Apply { func, args, .. } = &expr.kind else {
@@ -429,118 +612,410 @@ fn csv_file(expr: &Expr) -> Option<(&str, Pos)> {
     }
 }
 
-/// Places headings, gaps and shown bindings on the sheet whose section they are written in.
-fn lay_out(
-    program: &Program,
-    symbols: &BTreeMap<String, Symbol>,
-    bindings: &mut [Binding],
-    errors: &mut Vec<Diagnostic>,
-) -> Vec<Sheet> {
-    let mut sheets: Vec<Sheet> = Vec::new();
-    let mut current: Option<usize> = None;
-    for (index, item) in program.items.iter().enumerate() {
-        let layout = match &item.kind {
-            ItemKind::Sheet(name) => {
-                errors.extend(sheet_name_error(&name.value, name.pos));
-                if let Some(other) = sheets
-                    .iter()
-                    .find(|sheet| sheet.name.to_lowercase() == name.value.to_lowercase())
-                {
-                    errors.push(Diagnostic::error(
-                        name.pos,
-                        format!(
-                            "there is already a sheet called '{}' at {}; sheet names ignore case",
-                            other.name, other.pos
-                        ),
-                    ));
-                }
-                sheets.push(Sheet {
-                    name: name.value.clone(),
-                    pos: name.pos,
-                    statement: Some(index),
-                    items: Vec::new(),
-                });
-                current = Some(sheets.len() - 1);
-                continue;
-            }
-            ItemKind::Heading { .. } => SheetItem::Heading(index),
-            ItemKind::Gap => SheetItem::Gap(index),
-            ItemKind::Signature(sig) => match symbols.get(&sig.name.name) {
-                Some(&Symbol::Binding(b))
-                    if bindings[b].signature == Some(index) && bindings[b].role != Role::Local =>
-                {
-                    SheetItem::Binding(b)
-                }
-                _ => continue,
-            },
-            _ => continue,
-        };
-        let sheet = *current.get_or_insert_with(|| {
-            sheets.push(Sheet {
-                name: DEFAULT_SHEET.to_string(),
-                pos: item.pos,
-                statement: None,
-                items: Vec::new(),
-            });
-            sheets.len() - 1
-        });
-        if let SheetItem::Binding(b) = layout {
-            bindings[b].sheet = Some(sheet);
+/// Checks that a value's definition is one literal written in the file.
+fn value_error(expr: &Expr) -> Option<Diagnostic> {
+    if let ExprKind::Str(text) = &expr.kind {
+        return text_error(text, expr.pos);
+    }
+    if expr.is_literal() {
+        return None;
+    }
+    let message = match &expr.kind {
+        ExprKind::List(_) => {
+            "a value holds one number, string or logical; many values belong in an input file, \
+             read with `csv \"file.csv\"`"
         }
-        sheets[sheet].items.push(layout);
-    }
-    // A workbook has at least one sheet, even when nothing is shown.
-    if sheets.is_empty() {
-        sheets.push(Sheet {
-            name: DEFAULT_SHEET.to_string(),
-            pos: Pos::START,
-            statement: None,
-            items: Vec::new(),
-        });
-    }
-    sheets
+        ExprKind::Text(_) => "a value's text is data, in double quotes, such as \"Retail\"",
+        _ => {
+            "a value is written in the file: a number, a string, `True` or `False`, or `csv \
+             \"file.csv\"`; a value worked out from others is a `Formula`"
+        }
+    };
+    Some(Diagnostic::error(expr.pos, message))
 }
 
-/// Attributes that only make sense for what is shown, on a binding that is not.
-fn role_errors(sig: &Signature, role: Role) -> Vec<Diagnostic> {
-    let name = &sig.name.name;
-    let mut errors = Vec::new();
-    if role == Role::Function {
+/// Checks that a label's definition is its text, in double quotes.
+fn label_error(expr: &Expr) -> Option<Diagnostic> {
+    match &expr.kind {
+        ExprKind::Str(text) => text_error(text, expr.pos),
+        ExprKind::Text(_) => Some(Diagnostic::error(
+            expr.pos,
+            "a label's text is data, in double quotes, such as \"Revenue\"",
+        )),
+        _ => Some(Diagnostic::error(
+            expr.pos,
+            "a label is its text, in double quotes, such as \"Revenue\"",
+        )),
+    }
+}
+
+fn text_error(text: &str, pos: Pos) -> Option<Diagnostic> {
+    (text.chars().count() > MAX_CELL_TEXT)
+        .then(|| Diagnostic::error(pos, "a cell holds at most 32,767 characters"))
+}
+
+/// The binding a name refers to, if it is a binding of one of `roles`.
+fn binding_of(
+    symbols: &BTreeMap<String, Symbol>,
+    bindings: &[Binding],
+    name: &str,
+    roles: &[Role],
+) -> Option<usize> {
+    match symbols.get(name) {
+        Some(&Symbol::Binding(binding)) if roles.contains(&bindings[binding].role) => Some(binding),
+        _ => None,
+    }
+}
+
+/// Reads the sheets and the workbook: the sheets come in the order the workbook lists them.
+fn sheets_and_workbook(
+    program: &Program,
+    bindings: &[Binding],
+    symbols: &BTreeMap<String, Symbol>,
+    styles: &mut Evaluator,
+    errors: &mut Vec<Diagnostic>,
+) -> (Vec<Sheet>, Font) {
+    let definition = |binding: usize| definition_of(program, &bindings[binding]);
+
+    let workbooks: Vec<usize> = (0..bindings.len())
+        .filter(|&binding| bindings[binding].role == Role::Workbook)
+        .collect();
+    let Some(&workbook) = workbooks.first() else {
         errors.push(Diagnostic::error(
-            sig.name.pos,
+            Pos::START,
+            "a file has one `Workbook` binding, which lists the sheets: `workbook : Workbook` and \
+             `workbook = { sheets = [forecast] }`",
+        ));
+        return (Vec::new(), Font::default());
+    };
+    for &other in &workbooks[1..] {
+        errors.push(Diagnostic::error(
+            bindings[other].pos,
             format!(
-                "`{name}` is a function, which has no cells and so no signature; its size is \
-                 worked out where it is used"
+                "a file has one `Workbook` binding, and `{}` is another",
+                bindings[other].name
             ),
         ));
-        return errors;
     }
-    if role == Role::Input && sig.label.is_none() {
+
+    let mut font = Font::default();
+    let mut listed: Vec<(usize, Pos)> = Vec::new();
+    for field in record_fields(definition(workbook), "workbook", errors) {
+        match field.name.name.as_str() {
+            "sheets" => {
+                let ExprKind::List(rows) = &field.value.kind else {
+                    errors.push(Diagnostic::error(
+                        field.value.pos,
+                        "the sheets are a list of their names, in the order of their tabs, such as \
+                         `[inputs, forecast]`",
+                    ));
+                    continue;
+                };
+                for value in rows.iter().flatten() {
+                    match &value.kind {
+                        ExprKind::Name(name) => {
+                            match binding_of(symbols, bindings, name, &[Role::Sheet]) {
+                                Some(sheet) if listed.iter().any(|(s, _)| *s == sheet) => {
+                                    errors.push(Diagnostic::error(
+                                        value.pos,
+                                        format!("the sheet `{name}` is listed twice"),
+                                    ));
+                                }
+                                Some(sheet) => listed.push((sheet, value.pos)),
+                                None => errors.push(Diagnostic::error(
+                                    value.pos,
+                                    format!("`{name}` is not a sheet, such as `{name} : Sheet`"),
+                                )),
+                            }
+                        }
+                        _ => errors.push(Diagnostic::error(
+                            value.pos,
+                            "the sheets are listed by their names",
+                        )),
+                    }
+                }
+            }
+            "style" => font = cascade(field, styles, errors).unwrap_or_default(),
+            other => errors.push(unknown_field("workbook", "sheets and style", other, field)),
+        }
+    }
+
+    let mut sheets: Vec<Sheet> = Vec::new();
+    for &(binding, _) in &listed {
+        let mut sheet = Sheet {
+            binding,
+            name: String::new(),
+            color: None,
+            hidden: false,
+            font: Font::default(),
+        };
+        let mut named = false;
+        for field in record_fields(definition(binding), "sheet", errors) {
+            match field.name.name.as_str() {
+                "name" => match &field.value.kind {
+                    ExprKind::Text(name) => {
+                        errors.extend(sheet_name_error(name, field.value.pos));
+                        if let Some(other) = sheets
+                            .iter()
+                            .find(|other| other.name.to_lowercase() == name.to_lowercase())
+                        {
+                            errors.push(Diagnostic::error(
+                                field.value.pos,
+                                format!(
+                                    "there is already a sheet called '{}'; sheet names ignore case",
+                                    other.name
+                                ),
+                            ));
+                        }
+                        sheet.name = name.clone();
+                        named = true;
+                    }
+                    _ => errors.push(Diagnostic::error(
+                        field.value.pos,
+                        "a sheet's name is a setting, in single quotes, such as 'Forecast'",
+                    )),
+                },
+                "color" => {
+                    sheet.color = styles
+                        .record(&field.value, StyleType::Color)
+                        .map(|value| style::color(&value));
+                }
+                "hidden" => match field.value.kind {
+                    ExprKind::Bool(hidden) => sheet.hidden = hidden,
+                    _ => errors.push(Diagnostic::error(
+                        field.value.pos,
+                        "whether a sheet is hidden is `True` or `False`",
+                    )),
+                },
+                "style" => sheet.font = cascade(field, styles, errors).unwrap_or_default(),
+                other => errors.push(unknown_field(
+                    "sheet",
+                    "name, color, hidden and style",
+                    other,
+                    field,
+                )),
+            }
+        }
+        if !named {
+            errors.push(Diagnostic::error(
+                bindings[binding].pos,
+                format!(
+                    "the sheet `{}` needs a name, such as `{{ name = 'Forecast' }}`",
+                    bindings[binding].name
+                ),
+            ));
+        }
+        sheets.push(sheet);
+    }
+    for (binding, b) in bindings.iter().enumerate() {
+        if b.role == Role::Sheet && !listed.iter().any(|(sheet, _)| *sheet == binding) {
+            errors.push(Diagnostic::error(
+                b.pos,
+                format!(
+                    "the workbook's `sheets` does not list `{}`; every sheet is listed, in the \
+                     order of the tabs",
+                    b.name
+                ),
+            ));
+        }
+    }
+    if listed.is_empty() {
         errors.push(Diagnostic::error(
-            sig.name.pos,
-            format!("an input is shown with a label, such as `{name} : 'Forecast horizon' Input`"),
+            bindings[workbook].pos,
+            "the workbook lists at least one sheet, such as `{ sheets = [forecast] }`",
+        ));
+    } else if sheets.iter().all(|sheet| sheet.hidden) {
+        errors.push(Diagnostic::error(
+            bindings[workbook].pos,
+            "every sheet is hidden; at least one must be shown",
         ));
     }
-    if role == Role::Local {
-        let placed = [
-            (sig.at.as_ref().map(|at| at.pos), "`@`"),
-            (sig.format.as_ref().map(|format| format.pos), "`Format`"),
-            (sig.bold, "`Bold`"),
-            (sig.italic, "`Italic`"),
-        ];
-        for (pos, what) in placed {
-            if let Some(pos) = pos {
+    (sheets, font)
+}
+
+/// The font a sheet's or the workbook's style gives, which cascades to the cells. Nothing else
+/// may be set in such a style.
+fn cascade(field: &Field, styles: &mut Evaluator, errors: &mut Vec<Diagnostic>) -> Option<Font> {
+    let value = styles.record(&field.value, StyleType::Cell)?;
+    for (part, pos) in style::beyond_font_face(&value) {
+        errors.push(Diagnostic::error(
+            pos,
+            format!(
+                "only the font's name and size cascade from a sheet or the workbook, and `{part}` \
+                 is neither; set it in the style of the cells"
+            ),
+        ));
+    }
+    let Value::Record(_, fields) = &value else {
+        unreachable!("a cell's style is a record");
+    };
+    Some(style::font(fields.get("font").map(|(font, _)| font)))
+}
+
+/// The fields of a record that must be one, as a sheet's or the workbook's definition is.
+fn record_fields<'e>(expr: &'e Expr, what: &str, errors: &mut Vec<Diagnostic>) -> &'e [Field] {
+    match &expr.kind {
+        ExprKind::Record(fields) => {
+            for (i, field) in fields.iter().enumerate() {
+                if fields[..i]
+                    .iter()
+                    .any(|other| other.name.name == field.name.name)
+                {
+                    errors.push(Diagnostic::error(
+                        field.name.pos,
+                        format!("the field `{}` is set twice", field.name.name),
+                    ));
+                }
+            }
+            fields
+        }
+        _ => {
+            errors.push(Diagnostic::error(
+                expr.pos,
+                format!("a {what} is a record of settings, such as `{{ name = 'Forecast' }}`"),
+            ));
+            &[]
+        }
+    }
+}
+
+fn unknown_field(what: &str, fields: &str, name: &str, field: &Field) -> Diagnostic {
+    Diagnostic::error(
+        field.name.pos,
+        format!("a {what} has no field `{name}`; its fields are {fields}"),
+    )
+}
+
+/// Resolves each placed binding's placement, and finds the sheet it is on by following its
+/// placements back to a cell. Returns the placed bindings, each after the one it is placed
+/// beside.
+fn places(
+    program: &Program,
+    symbols: &BTreeMap<String, Symbol>,
+    sheets: &[Sheet],
+    bindings: &mut [Binding],
+    errors: &mut Vec<Diagnostic>,
+) -> Vec<usize> {
+    let placed: Vec<usize> = (0..bindings.len())
+        .filter(|&binding| bindings[binding].role.is_placed())
+        .collect();
+    for &binding in &placed {
+        let ItemKind::Signature(sig) = &program.items[bindings[binding].signature].kind else {
+            unreachable!("a signature index points at a signature");
+        };
+        let place = match &sig.place {
+            Some(Placement::At {
+                sheet, row, column, ..
+            }) => {
+                let found = binding_of(symbols, bindings, &sheet.name, &[Role::Sheet])
+                    .and_then(|sheet| sheets.iter().position(|s| s.binding == sheet));
+                match found {
+                    Some(index) => Some(Place::At {
+                        sheet: index,
+                        row: *row,
+                        column: *column,
+                    }),
+                    None => {
+                        // A sheet the workbook does not list has been reported already.
+                        if binding_of(symbols, bindings, &sheet.name, &[Role::Sheet]).is_none() {
+                            errors.push(Diagnostic::error(
+                                sheet.pos,
+                                format!(
+                                    "`{0}` is not a sheet; `at` takes a sheet and a cell, as in \
+                                     `at {0} B2`, where `{0} : Sheet`",
+                                    sheet.name
+                                ),
+                            ));
+                        }
+                        None
+                    }
+                }
+            }
+            Some(Placement::Beside { reference, moves }) => {
+                match binding_of(
+                    symbols,
+                    bindings,
+                    &reference.name,
+                    &[Role::Formula, Role::Value, Role::Label],
+                ) {
+                    Some(other) if other == binding => {
+                        errors.push(Diagnostic::error(
+                            reference.pos,
+                            format!("`{}` cannot be placed beside itself", reference.name),
+                        ));
+                        None
+                    }
+                    Some(other) => Some(Place::Beside {
+                        reference: other,
+                        moves: moves.clone(),
+                    }),
+                    None => {
+                        errors.push(Diagnostic::error(
+                            reference.pos,
+                            format!(
+                                "`{}` has no cells to be placed beside; a binding is placed \
+                                 beside a formula, a value or a label",
+                                reference.name
+                            ),
+                        ));
+                        None
+                    }
+                }
+            }
+            // A missing place has been reported with the signature.
+            None => None,
+        };
+        bindings[binding].place = place;
+    }
+
+    // The layout's graph: each placed binding points at the one it is placed beside.
+    let mut order = Vec::new();
+    let mut done: BTreeSet<usize> = BTreeSet::new();
+    for &start in &placed {
+        let mut path: Vec<usize> = Vec::new();
+        let mut at = start;
+        while !done.contains(&at) {
+            if let Some(from) = path.iter().position(|&p| p == at) {
+                let mut cycle: Vec<&str> = path[from..]
+                    .iter()
+                    .map(|&p| bindings[p].name.as_str())
+                    .collect();
+                cycle.push(&bindings[at].name);
                 errors.push(Diagnostic::error(
-                    pos,
-                    format!("{what} applies to a shown binding, and `{name}` has no label"),
+                    program.items[bindings[at].signature].pos,
+                    format!(
+                        "these bindings are placed beside each other in a circle: {}; one of \
+                         them goes at a cell, with `at`",
+                        cycle.join(" -> ")
+                    ),
                 ));
+                done.extend(path.drain(..));
+                break;
+            }
+            path.push(at);
+            match &bindings[at].place {
+                Some(Place::Beside { reference, .. }) => at = *reference,
+                _ => break,
+            }
+        }
+        // The path, from its far end back, is in layout order.
+        for &p in path.iter().rev() {
+            if done.insert(p) {
+                order.push(p);
             }
         }
     }
-    errors
+    for &binding in &order {
+        bindings[binding].sheet = match &bindings[binding].place {
+            Some(Place::At { sheet, .. }) => Some(*sheet),
+            Some(Place::Beside { reference, .. }) => bindings[*reference].sheet,
+            None => None,
+        };
+    }
+    order
 }
 
-/// What the names in a definition can refer to: the file's names, and, inside a function, its
+/// What the names in a definition can refer to: the file's names, and, inside a lambda, its
 /// parameters, which come first.
 struct Scope<'a> {
     symbols: &'a BTreeMap<String, Symbol>,
@@ -549,11 +1024,11 @@ struct Scope<'a> {
     params: &'a [String],
     /// The tables that were read.
     tables: &'a BTreeMap<usize, Table>,
-    /// Every input defined by `csv`, whether or not its file could be read.
+    /// Every value defined by `csv`, whether or not its file could be read.
     table_bindings: &'a BTreeSet<usize>,
 }
 
-/// How a function is called, for messages: `name a b`.
+/// How a lambda is called, for messages: `name a b`.
 fn call_usage(binding: &Binding) -> String {
     let mut usage = binding.name.clone();
     for param in &binding.params {
@@ -574,19 +1049,31 @@ impl Scope<'_> {
         match &expr.kind {
             ExprKind::Name(name) if self.params.contains(name) => {}
             ExprKind::Name(name) => match self.symbols.get(name) {
-                Some(Symbol::Binding(b)) if self.bindings[*b].role == Role::Function => {
-                    errors.push(Diagnostic::error(
-                        expr.pos,
-                        format!(
-                            "`{name}` is a function; give it its arguments: `{}`",
-                            call_usage(&self.bindings[*b])
-                        ),
-                    ));
+                Some(Symbol::Binding(b)) => {
+                    let binding = &self.bindings[*b];
+                    let problem = match binding.role {
+                        Role::Formula | Role::Value | Role::Local => {
+                            uses.push(Use {
+                                binding: *b,
+                                delayed,
+                            });
+                            None
+                        }
+                        Role::Lambda => Some(format!(
+                            "`{name}` is a lambda; give it its arguments: `{}`",
+                            call_usage(binding)
+                        )),
+                        Role::Label => Some(format!(
+                            "`{name}` is a label, which formulas cannot use; a text a formula \
+                             uses is a `Value`"
+                        )),
+                        role => Some(format!(
+                            "`{name}` is a {}, not something a formula can use",
+                            role.word().to_lowercase()
+                        )),
+                    };
+                    errors.extend(problem.map(|message| Diagnostic::error(expr.pos, message)));
                 }
-                Some(Symbol::Binding(b)) => uses.push(Use {
-                    binding: *b,
-                    delayed,
-                }),
                 Some(Symbol::Size(s)) => {
                     if self.sizes[*s].kind == SizeKind::Unknown {
                         errors.push(Diagnostic::error(
@@ -600,6 +1087,7 @@ impl Scope<'_> {
                 }
                 None => {
                     let message = match Builtin::lookup(name) {
+                        Some(builtin) if builtin.arity() == 0 => return,
                         Some(builtin) => format!(
                             "`{name}` is a function; give it its arguments: `{}`",
                             builtin.usage()
@@ -609,18 +1097,41 @@ impl Scope<'_> {
                     errors.push(Diagnostic::error(expr.pos, message));
                 }
             },
-            ExprKind::Apply { func, args, seed } => {
+            ExprKind::Apply {
+                func,
+                axis,
+                args,
+                seed,
+            } => {
                 self.resolve_call(func, args.len(), uses, errors);
+                let shifts = matches!(func.name.as_str(), "lag" | "tail" | "init");
+                if axis.is_some() && !shifts {
+                    errors.push(Diagnostic::error(
+                        func.pos,
+                        "only `lag`, `tail` and `init` say which way they work",
+                    ));
+                }
+                // A lambda's body is written once into the workbook, however it is called.
+                if shifts && axis.is_none() && !self.params.is_empty() {
+                    errors.push(Diagnostic::error(
+                        func.pos,
+                        format!(
+                            "inside a lambda, `{0}` says which way it works, `across` or `down`, \
+                             as in `{0} across x`: the lambda may be given rows or columns",
+                            func.name
+                        ),
+                    ));
+                }
                 match (func.name.as_str(), args.as_slice()) {
                     ("csv", _) => errors.push(Diagnostic::error(
                         func.pos,
-                        "`csv` reads a file into an input, as the whole of its definition: \
-                         `history = csv \"history.csv\"`, with `Input` in its signature",
+                        "`csv` reads a file into a value, as the whole of its definition: \
+                         `history = csv \"history.csv\"`, with `Value` in its signature",
                     )),
                     ("column", [name, table]) => errors.extend(self.column_error(name, table)),
-                    // What `lag 1 x from seed` lags is read only in earlier periods.
-                    ("lag", [periods, lagged]) if seed.is_some() => {
-                        self.resolve_expr(periods, delayed, uses, errors);
+                    // What `lag 1 x seed first` lags is read only at earlier positions.
+                    ("lag", [steps, lagged]) if seed.is_some() => {
+                        self.resolve_expr(steps, delayed, uses, errors);
                         self.resolve_expr(lagged, true, uses, errors);
                         if let Some(seed) = seed {
                             self.resolve_expr(seed, delayed, uses, errors);
@@ -630,6 +1141,19 @@ impl Scope<'_> {
                     _ => {}
                 }
             }
+            ExprKind::Text(_) => errors.push(Diagnostic::error(
+                expr.pos,
+                "single quotes hold a setting, such as a format code; a string in a formula takes \
+                 double quotes",
+            )),
+            ExprKind::Constructor(word) => errors.push(Diagnostic::error(
+                expr.pos,
+                format!("`{word}` is a setting of a style, not a value a formula can use"),
+            )),
+            ExprKind::Record(_) | ExprKind::Update { .. } => errors.push(Diagnostic::error(
+                expr.pos,
+                "a record belongs to a style, a sheet or the workbook, not to a formula",
+            )),
             _ => {}
         }
         for child in expr.children() {
@@ -653,7 +1177,7 @@ impl Scope<'_> {
                         return Some(Diagnostic::error(
                             table.pos,
                             format!(
-                                "`column` takes a table, an input defined by `csv`, and \
+                                "`column` takes a table, a value defined by `csv`, and \
                                  `{table_name}` is not one"
                             ),
                         ));
@@ -663,7 +1187,7 @@ impl Scope<'_> {
             _ => {
                 return Some(Diagnostic::error(
                     table.pos,
-                    "`column` takes a table by its name: an input defined by `csv`",
+                    "`column` takes a table by its name: a value defined by `csv`",
                 ));
             }
         };
@@ -701,7 +1225,7 @@ impl Scope<'_> {
             return;
         } else {
             match self.symbols.get(&func.name) {
-                Some(Symbol::Binding(b)) if self.bindings[*b].role == Role::Function => {
+                Some(Symbol::Binding(b)) if self.bindings[*b].role == Role::Lambda => {
                     uses.push(Use {
                         binding: *b,
                         delayed: false,
@@ -713,7 +1237,7 @@ impl Scope<'_> {
                     errors.push(Diagnostic::error(
                         func.pos,
                         format!(
-                            "`{}` is not a function, so it cannot take arguments",
+                            "`{}` is not a lambda, so it cannot take arguments",
                             func.name
                         ),
                     ));
@@ -739,28 +1263,6 @@ impl Scope<'_> {
             ));
         }
     }
-}
-
-/// Checks that an input's definition is written out in the file. Errors about the whole
-/// definition point at the binding's name, `pos`.
-fn check_input(expr: &Expr, pos: Pos) -> Result<(), Diagnostic> {
-    if expr.is_literal() {
-        return Ok(());
-    }
-    if let ExprKind::List(rows) = &expr.kind {
-        return match rows.iter().flatten().find(|value| !value.is_literal()) {
-            Some(value) => Err(Diagnostic::error(
-                value.pos,
-                "an input list holds literal values only",
-            )),
-            None => Ok(()),
-        };
-    }
-    Err(Diagnostic::error(
-        pos,
-        "an input's value is written in the file: a number, a string, `true`, `false`, or a list \
-         of these",
-    ))
 }
 
 /// Orders the bindings so that each comes after the bindings it uses, and finds the cycles that
@@ -812,8 +1314,8 @@ fn circular(bindings: &[Binding], cycle: &[usize]) -> Diagnostic {
     Diagnostic::error(
         bindings[cycle[0]].pos,
         format!(
-            "circular definition: {}; a value cannot depend on itself in the same period, but \
-             `lag 1 x from first` carries a balance from one period to the next",
+            "circular definition: {}; a value cannot depend on itself, but `lag 1 x seed \
+             first` carries a value from one position to the next",
             path.join(" -> ")
         ),
     )
@@ -926,10 +1428,10 @@ fn topological(
 
 /// Checks a cycle that a delayed use breaks, and finds the balance it carries.
 ///
-/// Each period of a recurrence is worked out from the period before, so inside it the balance
-/// and the bindings it depends on are taken one period at a time. Only what works position by
-/// position can take them; `lag` takes the balance itself, one period back, always with the same
-/// first value.
+/// Each position of a recurrence is worked out from the one before, so inside it the carried
+/// value and the bindings it depends on are taken one position at a time. Only what works
+/// position by position can take them; `lag` takes the carried value itself, one position back,
+/// always with the same first value.
 fn recurrence(
     program: &Program,
     symbols: &BTreeMap<String, Symbol>,
@@ -953,8 +1455,8 @@ fn recurrence(
         return Err(Diagnostic::error(
             first.pos,
             format!(
-                "{} are each carried from one period to the next in the same cycle; coupled \
-                 balances are not supported yet",
+                "{} are each carried from one position to the next in the same cycle; coupled \
+                 values are not supported yet",
                 names.join(" and ")
             ),
         ));
@@ -983,7 +1485,7 @@ struct RecurrenceCheck<'a> {
     symbols: &'a BTreeMap<String, Symbol>,
     members: &'a BTreeSet<usize>,
     state: &'a str,
-    /// The first value, as written, of the first `lag 1 state from first` seen.
+    /// The first value, as written, of the first `lag 1 state seed first` seen.
     seed: Option<String>,
 }
 
@@ -1008,21 +1510,23 @@ impl RecurrenceCheck<'_> {
         }
         let state = self.state;
         match &expr.kind {
-            ExprKind::Apply { func, args, seed } if func.name == "lag" => {
+            ExprKind::Apply {
+                func, args, seed, ..
+            } if func.name == "lag" => {
                 let carries_state = matches!(&args[1].kind, ExprKind::Name(name) if name == state);
                 let (Some(seed), true, Some(1)) = (seed, carries_state, args[0].integer()) else {
                     return Err(Diagnostic::error(
                         func.pos,
                         format!(
-                            "inside a cycle, `lag` carries the balance itself one period, with \
-                             its first value: `lag 1 {state} from first`"
+                            "inside a cycle, `lag` carries the value itself one position, \
+                             with its first value: `lag 1 {state} seed first`"
                         ),
                     ));
                 };
                 if self.mentions(seed) {
                     return Err(Diagnostic::error(
                         seed.pos,
-                        "the first value of a balance cannot depend on the balance",
+                        format!("the first value of `{state}` cannot depend on `{state}`"),
                     ));
                 }
                 let text = expression(seed);
@@ -1030,8 +1534,8 @@ impl RecurrenceCheck<'_> {
                     Some(first) if *first != text => Err(Diagnostic::error(
                         seed.pos,
                         format!(
-                            "every `lag 1 {state} from …` gives the same first value, and another \
-                             gives `{first}`"
+                            "every `lag 1 {state} seed …` gives the same first value, and \
+                             another gives `{first}`"
                         ),
                     )),
                     _ => {
@@ -1058,8 +1562,8 @@ impl RecurrenceCheck<'_> {
                     return Err(Diagnostic::error(
                         func.pos,
                         format!(
-                            "`{}` cannot take part in a balance carried from one period to the \
-                             next, which is worked out one period at a time",
+                            "`{}` cannot take part in a value carried from one position to \
+                             the next, which is worked out one position at a time",
                             func.name
                         ),
                     ));
@@ -1068,7 +1572,7 @@ impl RecurrenceCheck<'_> {
             }
             ExprKind::List(_) | ExprKind::Range { .. } => Err(Diagnostic::error(
                 expr.pos,
-                "a list or a range cannot hold a balance carried from one period to the next",
+                "a list or a range cannot hold a value carried from one position to the next",
             )),
             _ => expr
                 .children()
@@ -1118,128 +1622,25 @@ fn sheet_name_error(name: &str, pos: Pos) -> Option<Diagnostic> {
     Some(Diagnostic::error(pos, problem))
 }
 
-fn text_error(text: &Text) -> Option<Diagnostic> {
-    (text.value.chars().count() > MAX_CELL_TEXT)
-        .then(|| Diagnostic::error(text.pos, "a cell holds at most 32,767 characters"))
-}
-
-/// Why a number format might be rejected by the spreadsheet app, if it might. The check is
-/// conservative: literal text belongs in double quotes.
-fn format_problem(format: &str) -> Option<String> {
-    if format.is_empty() {
-        return Some("a number format cannot be empty".to_string());
-    }
-    if format.chars().count() > 255 {
-        return Some("a number format has at most 255 characters".to_string());
-    }
-    if format.eq_ignore_ascii_case("general") {
-        return None;
-    }
-    let mut sections = 1;
-    let mut chars = format.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => {
-                if !chars.by_ref().any(|c| c == '"') {
-                    return Some("a quoted part of the number format is never closed".to_string());
-                }
-            }
-            '[' => {
-                let mut inside = String::new();
-                loop {
-                    match chars.next() {
-                        Some(']') => break,
-                        Some(c) => inside.push(c),
-                        None => {
-                            return Some("a `[` in the number format is never closed".to_string());
-                        }
-                    }
-                }
-                if !bracket_allowed(&inside) {
-                    return Some(format!(
-                        "`[{inside}]` is not a color, a condition or an elapsed time"
-                    ));
-                }
-            }
-            '\\' | '_' | '*' => {
-                if chars.next().is_none() {
-                    return Some(format!("`{c}` must be followed by a character"));
-                }
-            }
-            ';' => {
-                sections += 1;
-                if sections > 4 {
-                    return Some("a number format has at most four sections".to_string());
-                }
-            }
-            '0'..='9'
-            | '#'
-            | '?'
-            | '.'
-            | ','
-            | '%'
-            | 'E'
-            | 'e'
-            | '+'
-            | '-'
-            | '/'
-            | '('
-            | ')'
-            | ':'
-            | ' '
-            | '$'
-            | '@'
-            | '£'
-            | '€'
-            | '¥' => {}
-            'd' | 'm' | 'y' | 'h' | 's' | 'D' | 'M' | 'Y' | 'H' | 'S' | 'A' | 'P' | 'a' | 'p' => {}
-            other => {
-                return Some(format!(
-                    "`{other}` cannot appear in a number format outside double quotes"
-                ));
-            }
-        }
-    }
-    None
-}
-
-fn bracket_allowed(inside: &str) -> bool {
-    const COLORS: [&str; 8] = [
-        "black", "blue", "cyan", "green", "magenta", "red", "white", "yellow",
-    ];
-    let lower = inside.to_ascii_lowercase();
-    let all = |unit: u8| !lower.is_empty() && lower.bytes().all(|b| b == unit);
-    let condition = ["<=", ">=", "<>", "<", ">", "="]
-        .iter()
-        .find_map(|op| lower.strip_prefix(op))
-        .is_some_and(|number| {
-            !number.is_empty()
-                && number
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || b == b'.' || b == b'-')
-        });
-    COLORS.contains(&lower.as_str())
-        || lower
-            .strip_prefix("color")
-            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-        || all(b'h')
-        || all(b'm')
-        || all(b's')
-        || condition
-        || lower.starts_with('$')
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::parser::parse;
 
-    fn model(source: &str) -> Model {
-        resolve(&parse(source).expect("parses"), &Inputs::new()).expect("resolves")
+    /// A workbook of one sheet, `s`, for the bindings in `body`.
+    fn file(body: &str) -> String {
+        format!(
+            "yup 0.2\nworkbook : Workbook\nworkbook = {{ sheets = [s] }}\ns : Sheet\ns = {{ name = \
+             'S' }}\n{body}"
+        )
     }
 
-    fn errors(source: &str) -> Vec<String> {
-        resolve(&parse(source).expect("parses"), &Inputs::new())
+    fn model(body: &str) -> Model {
+        resolve(&parse(&file(body)).expect("parses"), &Inputs::new()).expect("resolves")
+    }
+
+    fn errors(body: &str) -> Vec<String> {
+        resolve(&parse(&file(body)).expect("parses"), &Inputs::new())
             .expect_err("the source is wrong")
             .iter()
             .map(ToString::to_string)
@@ -1247,21 +1648,38 @@ mod tests {
     }
 
     #[test]
-    fn a_label_makes_a_binding_shown() {
-        let model =
-            model("yup 0.1\nsheet 'S'\nh : 'Horizon' Input\nh = 5\nx : 'X'\nx = h * 2\ny = x\n");
-        let roles: Vec<Role> = model.bindings.iter().map(|b| b.role).collect();
-        assert_eq!(roles, [Role::Input, Role::Shown, Role::Local]);
-        assert_eq!(
-            model.sheets[0].items,
-            [SheetItem::Binding(0), SheetItem::Binding(1)]
+    fn a_signature_gives_the_role() {
+        let model = model(
+            "h_label : Label _ at s B2\nh_label = \"Horizon\"\nh : Value Number _ h_label right \
+             2\nh = 5\nx : Formula Number _ h down\nx = h * 2\ny : Local\ny = x\n",
         );
-        assert_eq!(model.order, [0, 1, 2]);
+        let roles: Vec<Role> = model.bindings.iter().map(|b| b.role).collect();
+        assert_eq!(
+            roles,
+            [
+                Role::Workbook,
+                Role::Sheet,
+                Role::Label,
+                Role::Value,
+                Role::Formula,
+                Role::Local
+            ]
+        );
+        let names = |order: &[usize]| -> Vec<&str> {
+            order
+                .iter()
+                .map(|&b| model.bindings[b].name.as_str())
+                .collect()
+        };
+        assert_eq!(names(&model.order), ["h", "x", "y"]);
+        assert_eq!(names(&model.layout), ["h_label", "h", "x"]);
+        assert_eq!(model.bindings[4].sheet, Some(0));
+        assert_eq!(model.sheets[0].name, "S");
     }
 
     #[test]
     fn definitions_come_after_what_they_use() {
-        let model = model("yup 0.1\na = b + d\nb = d\nd = 1\n");
+        let model = model("a : Local\na = b + d\nb : Local\nb = d\nd : Local\nd = 1\n");
         let names: Vec<&str> = model
             .order
             .iter()
@@ -1271,25 +1689,31 @@ mod tests {
     }
 
     #[test]
-    fn items_before_any_sheet_go_on_a_default_sheet() {
-        let model = model("yup 0.1\nx : 'X'\nx = 1\nsheet 'Two'\n");
-        let names: Vec<&str> = model.sheets.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["Sheet1", "Two"]);
-        assert_eq!(model.sheets[0].statement, None);
+    fn a_definition_follows_its_own_signature() {
+        assert_eq!(
+            errors("a : Local\n\na = 1\nb : Local\nc = 2\nd = 3\ne : Local\n"),
+            [
+                "8:1: error: the definition of `a` follows its signature directly, with only \
+                 comments between",
+                "10:1: error: this defines `c`, but the signature above it is of `b`; a \
+                 definition follows its own signature",
+                "11:1: error: `d` has no signature above it; a binding is a signature, such as \
+                 `d : Formula Number _ …`, and then its definition",
+                "12:1: error: `e` has a signature but no definition below it, such as `e = …`",
+            ]
+        );
     }
 
     #[test]
     fn names_follow_the_rules_for_defined_names() {
         assert_eq!(
-            errors("yup 0.1\ntax2026 = 1\nr1c1 = 2\nsum = 3\nrate = 4\nc = 5\n"),
+            errors("tax2026 : Local\ntax2026 = 1\nr1c1 : Local\nr1c1 = 2\nsum : Local\nsum = 3\n"),
             [
-                "2:1: error: `tax2026` reads as a cell reference in the workbook; choose another \
+                "6:1: error: `tax2026` reads as a cell reference in the workbook; choose another \
                  name",
-                "3:1: error: `r1c1` reads as a row or column reference in the workbook's R1C1 \
+                "8:1: error: `r1c1` reads as a row or column reference in the workbook's R1C1 \
                  notation; choose another name",
-                "4:1: error: `sum` is the name of a function; choose another name",
-                "6:1: error: `c` reads as a row or column reference in the workbook's R1C1 \
-                 notation; choose another name",
+                "10:1: error: `sum` is the name of a function; choose another name",
             ]
         );
     }
@@ -1297,12 +1721,18 @@ mod tests {
     #[test]
     fn names_are_resolved() {
         assert_eq!(
-            errors("yup 0.1\nx = y + sum\nz = x 1\nw = lag 1\n"),
+            errors(
+                "x : Local\nx = y + sum\nz : Local\nz = x 1\nw : Local\nw = lag 1\nl : Label _ at s \
+                 B2\nl = \"L\"\nv : Local\nv = l + s\n"
+            ),
             [
-                "2:5: error: unknown name `y`",
-                "2:9: error: `sum` is a function; give it its arguments: `sum x`",
-                "3:5: error: `x` is not a function, so it cannot take arguments",
-                "4:5: error: `lag` takes 2 arguments: `lag 1 x, or lag 1 x from first`",
+                "7:5: error: unknown name `y`",
+                "7:9: error: `sum` is a function; give it its arguments: `sum x`",
+                "9:5: error: `x` is not a lambda, so it cannot take arguments",
+                "11:5: error: `lag` takes 2 arguments: `lag 1 x, or lag 1 x seed first`",
+                "15:5: error: `l` is a label, which formulas cannot use; a text a formula uses is \
+                 a `Value`",
+                "15:9: error: `s` is a sheet, not something a formula can use",
             ]
         );
     }
@@ -1310,140 +1740,124 @@ mod tests {
     #[test]
     fn a_cycle_is_reported_with_its_path() {
         assert_eq!(
-            errors("yup 0.1\na = b\nb = d + 1\nd = a\n"),
+            errors("a : Local\na = b\nb : Local\nb = d + 1\nd : Local\nd = a\n"),
             [
-                "2:1: error: circular definition: a -> b -> d -> a; a value cannot depend on \
-                 itself in the same period, but `lag 1 x from first` carries a balance from one \
-                 period to the next"
+                "7:1: error: circular definition: a -> b -> d -> a; a value cannot depend on \
+                 itself, but `lag 1 x seed first` carries a value from one position to the next"
             ]
         );
     }
 
     #[test]
-    fn a_cycle_through_a_lag_with_a_first_value_is_a_recurrence() {
+    fn a_cycle_through_a_seeded_lag_is_a_recurrence() {
         let model = model(
-            "yup 0.1\nopening = lag 1 closing from 100\npaid = min 30 opening\nclosing = opening \
-             - paid\nafter = closing * 2\n",
+            "opening : Local\nopening = lag 1 closing seed 100\npaid : Local\npaid = min 30 \
+             opening\nclosing : Local\nclosing = opening - paid\n",
         );
-        let names = |bindings: &[usize]| -> Vec<&str> {
-            bindings
-                .iter()
-                .map(|&b| model.bindings[b].name.as_str())
-                .collect()
-        };
-        assert_eq!(names(&model.order), ["opening", "paid", "closing", "after"]);
         assert_eq!(model.recurrences.len(), 1);
-        assert_eq!(
-            names(&model.recurrences[0].members),
-            ["opening", "paid", "closing"]
-        );
         assert_eq!(model.bindings[model.recurrences[0].state].name, "closing");
-        let counter = self::model("yup 0.1\ncount = lag 1 count from 0 + 1\n");
-        assert_eq!(counter.recurrences[0].members, [0]);
     }
 
     #[test]
-    fn a_recurrence_works_one_period_at_a_time() {
-        assert_eq!(
-            errors("yup 0.1\nopening = lag 1 closing from 100\nclosing = opening - sum opening\n"),
-            [
-                "3:21: error: `sum` cannot take part in a balance carried from one period to the \
-              next, which is worked out one period at a time"
-            ]
-        );
-        assert_eq!(
-            errors("yup 0.1\nopening = lag 2 closing from 100\nclosing = opening - 1\n"),
-            [
-                "2:11: error: inside a cycle, `lag` carries the balance itself one period, with its \
-              first value: `lag 1 closing from first`"
-            ]
-        );
-        assert_eq!(
-            errors("yup 0.1\na = lag 1 b from 0\nb = lag 1 a from 0 + 1\n"),
-            [
-                "2:1: error: `a` and `b` are each carried from one period to the next in the same \
-              cycle; coupled balances are not supported yet"
-            ]
-        );
+    fn a_recurrence_works_one_position_at_a_time() {
         assert_eq!(
             errors(
-                "yup 0.1\nopening = lag 1 closing from 100\nalso = lag 1 closing from 99\nclosing \
-                 = opening + also\n"
+                "opening : Local\nopening = lag 1 closing seed 100\nclosing : Local\nclosing = opening - sum opening\n"
             ),
             [
-                "3:27: error: every `lag 1 closing from …` gives the same first value, and another \
-              gives `100`"
+                "9:21: error: `sum` cannot take part in a value carried from one position to the \
+                 next, which is worked out one position at a time"
             ]
         );
     }
 
     #[test]
-    fn sizes_and_inputs_are_checked() {
+    fn values_and_labels_are_written_in_the_file() {
         assert_eq!(
             errors(
-                "yup 0.1\nn : Size Unknown\nn = 3\ns : Size Fixed\nh : Input\nh = 1 + 1\nx : \
-                 'X' Format \"0.0 years\"\nx = 1\n"
+                "a : Value _ at s B2\na = [1, 2]\nb : Value _ a down\nb = 1 + 1\nk : Label _ b \
+                 down\nk = 'K'\nn : Size Unknown\nn = 3\n"
             ),
             [
-                "7:16: error: `r` cannot appear in a number format outside double quotes",
-                "3:1: error: `n` is an unknown size: the workbook decides its value, so it \
+                "13:1: error: `n` is an unknown size: the workbook decides its value, so it \
                  cannot be given one here",
-                "4:1: error: the fixed size `s` needs a value, such as `s = 4`",
-                "5:1: error: an input is shown with a label, such as `h : 'Forecast horizon' \
-                 Input`",
-                "6:1: error: an input's value is written in the file: a number, a string, \
-                 `true`, `false`, or a list of these",
+                "7:5: error: a value holds one number, string or logical; many values belong in \
+                 an input file, read with `csv \"file.csv\"`",
+                "9:7: error: a value is written in the file: a number, a string, `True` or \
+                 `False`, or `csv \"file.csv\"`; a value worked out from others is a `Formula`",
+                "11:5: error: a label's text is data, in double quotes, such as \"Revenue\"",
             ]
         );
     }
 
     #[test]
-    fn functions_are_called_with_their_arguments() {
+    fn lambdas_are_called_with_their_arguments() {
         assert_eq!(
             errors(
-                "yup 0.1\ndiscount rate t = 1 / (1 + rate) ^ t\na = discount 0.1\nb = \
-                 discount\nf x x = x\ng x = x 1\ndiscount : 'D'\n"
+                "discount : Lambda Number -> Number -> Number\ndiscount rate t = 1 / (1 + rate) ^ \
+                 t\na : Local\na = discount 0.1\nb : Local\nb = discount\nf : Lambda Number -> \
+                 Number\nf x y = x\nx : Local\nx y = 1\n"
             ),
             [
-                "7:1: error: `discount` is a function, which has no cells and so no signature; \
-                 its size is worked out where it is used",
-                "5:5: error: the parameter `x` is given twice",
-                "3:5: error: `discount` takes 2 arguments: `discount rate t`",
-                "4:5: error: `discount` is a function; give it its arguments: `discount rate t`",
-                "6:7: error: `x` is a parameter, and a parameter is a value, not a function",
+                "12:1: error: `f`'s type names 1 parameter, and its definition gives 2",
+                "15:3: error: `x` is a Local, and only a lambda takes parameters",
+                "9:5: error: `discount` takes 2 arguments: `discount rate t`",
+                "11:5: error: `discount` is a lambda; give it its arguments: `discount rate t`",
             ]
         );
-    }
-
-    #[test]
-    fn sheet_names_follow_the_apps_rules() {
         assert_eq!(
-            errors("yup 0.1\nsheet 'a/b'\nsheet 'History'\nsheet 'A/B'\n"),
+            errors("g : Lambda Number -> Number\ng x = tail x\n"),
             [
-                "2:7: error: a sheet name cannot contain `/`",
-                "3:7: error: the spreadsheet app keeps the sheet name 'History' for itself",
-                "4:7: error: a sheet name cannot contain `/`",
-                "4:7: error: there is already a sheet called 'a/b' at 2:7; sheet names ignore case",
+                "7:7: error: inside a lambda, `tail` says which way it works, `across` or \
+                 `down`, as in `tail across x`: the lambda may be given rows or columns"
             ]
         );
     }
 
     #[test]
-    fn number_formats_are_checked_conservatively() {
-        for good in [
-            "0.0%",
-            "#,##0",
-            "#,##0;[Red]-#,##0",
-            "\"£\"#,##0.00",
-            "yyyy-mm-dd",
-            "[h]:mm",
-            "General",
-            "0.0E+00",
-        ] {
-            assert_eq!(format_problem(good), None, "{good}");
-        }
-        assert!(format_problem("0.0 x").is_some());
-        assert!(format_problem("[Orange]0").is_some());
-        assert!(format_problem("0;0;0;0;0").is_some());
+    fn sheets_and_the_workbook_are_checked() {
+        let source = "yup 0.2\nworkbook : Workbook\nworkbook = { sheets = [a, a, b], colour = 1 \
+                      }\na : Sheet\na = { name = 'a/b', hidden = True }\nb : Sheet\nb = { name = \
+                      'A/B', hidden = True, style = big }\nk : Sheet\nk = { name = 'K' }\nbig : \
+                      Style Cell\nbig = { font = { size = 20, bold = True } }\n";
+        let errors: Vec<String> = resolve(&parse(source).expect("parses"), &Inputs::new())
+            .expect_err("wrong")
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            errors,
+            [
+                "3:27: error: the sheet `a` is listed twice",
+                "3:34: error: a workbook has no field `colour`; its fields are sheets and style",
+                "5:14: error: a sheet name cannot contain `/`",
+                "7:14: error: a sheet name cannot contain `/`",
+                "7:14: error: there is already a sheet called 'a/b'; sheet names ignore case",
+                "11:29: error: only the font's name and size cascade from a sheet or the \
+                 workbook, and `font.bold` is neither; set it in the style of the cells",
+                "9:1: error: the workbook's `sheets` does not list `k`; every sheet is listed, in \
+                 the order of the tabs",
+                "3:1: error: every sheet is hidden; at least one must be shown",
+            ]
+        );
+    }
+
+    #[test]
+    fn placements_are_resolved_and_go_round_in_no_circle() {
+        assert_eq!(
+            errors(
+                "a : Label _ b down\na = \"A\"\nb : Label _ a down\nb = \"B\"\nk : Label _ k \
+                 right\nk = \"K\"\nd : Label _ at nowhere B2\nd = \"D\"\ne : Label _\ne = \"E\"\n"
+            ),
+            [
+                "14:1: error: `e` needs a place: a cell, as in `at forecast B2`, or beside \
+                 another binding, as in `… e_label right 2`",
+                "10:13: error: `k` cannot be placed beside itself",
+                "12:16: error: `nowhere` is not a sheet; `at` takes a sheet and a cell, as in `at \
+                 nowhere B2`, where `nowhere : Sheet`",
+                "6:1: error: these bindings are placed beside each other in a circle: a -> b -> \
+                 a; one of them goes at a cell, with `at`",
+            ]
+        );
     }
 }

@@ -19,6 +19,7 @@ mod place;
 mod printer;
 mod resolve;
 mod size;
+mod style;
 mod syntax;
 mod xlsx;
 mod zip;
@@ -43,7 +44,7 @@ pub struct InputFile {
 /// The input files a source reads with `csv "file.csv"`, in the order they are named.
 ///
 /// ```
-/// let source = "yup 0.1\nhistory : 'History' Input\nhistory = csv \"history.csv\"\n";
+/// let source = "yup 0.2\nhistory : Value _ at main B2\nhistory = csv \"history.csv\"\n";
 /// let files = yup_core::input_files(source).unwrap();
 /// assert_eq!(files[0].name, "history.csv");
 /// ```
@@ -77,11 +78,13 @@ pub const LANGUAGE_VERSION: &str = parser::VERSION;
 pub enum Step {
     /// Turns the text into a syntax tree.
     Parse,
-    /// Works out what each name refers to, and the order of the definitions.
+    /// Works out what each name refers to, how each binding looks, and the order of the
+    /// definitions.
     Resolve,
-    /// Works out the size and span of every expression.
+    /// Works out the size, span and cell type of every expression.
     Infer,
-    /// Works out where everything goes, in cells that may depend on fixed sizes.
+    /// Works out where everything goes, in cells that may depend on fixed sizes. A cell that
+    /// depends on a fixed size has no A1 form, so Place shows its file as Infer does.
     Place,
     /// Replaces fixed sizes by their values.
     Ground,
@@ -150,8 +153,10 @@ pub struct Built {
 /// Runs every step and returns the workbook.
 ///
 /// ```
-/// let source = "yup 0.1\nrate : 'Rate' Input\nrate = 0.05\nyears = 1 .. 3\n\
-///               growth : 'Growth'\ngrowth = (1 + rate) ^ years\n";
+/// let source = "yup 0.2\nworkbook : Workbook\nworkbook = { sheets = [main] }\n\
+///               main : Sheet\nmain = { name = 'Main' }\n\
+///               rate : Value Number _ at main D2\nrate = 0.05\n\
+///               growth : Formula Number _ rate down\ngrowth = (1 + rate) ^ (1 .. 3)\n";
 /// let built = yup_core::build(source, &yup_core::Inputs::new()).unwrap();
 /// assert!(built.xlsx.starts_with(b"PK"));
 /// assert!(built.warnings.is_empty());
@@ -171,13 +176,14 @@ pub fn build(source: &str, inputs: &Inputs) -> Result<Built, Vec<Diagnostic>> {
 /// ```
 /// use yup_core::{Inputs, Step, show};
 ///
-/// let source = "yup 0.1\nyears = 1 .. 5\ngrowth = tail years / lag 1 years\n";
+/// let source = "yup 0.2\nworkbook : Workbook\nworkbook = { sheets = [main] }\n\
+///               main : Sheet\nmain = { name = 'Main' }\n\
+///               years : Local\nyears = 1 .. 5\ngrowth : Local\ngrowth = tail years / lag 1 years\n";
 /// let shown = show(source, Step::Infer, &Inputs::new()).unwrap();
-/// assert_eq!(
-///     shown.text,
-///     "yup 0.1\nyears : [1, 5]\nyears = 1 .. 5\ngrowth : [1, 4] from [0, 1]\n\
-///      growth = tail years / lag 1 years\n"
-/// );
+/// assert!(shown.text.ends_with(
+///     "years : Local Number [1, 5]\nyears = 1 .. 5\n\
+///      growth : Local Number [1, 4] start [0, 1]\ngrowth = tail years / lag 1 years\n"
+/// ));
 /// ```
 pub fn show(source: &str, step: Step, inputs: &Inputs) -> Result<Shown, Vec<Diagnostic>> {
     match run(source, inputs, step, false)? {
@@ -210,18 +216,26 @@ fn run(source: &str, inputs: &Inputs, last: Step, bytes: bool) -> Result<Outcome
         return text(print(Detail::Typed(&typed)));
     }
     let placed = place::place(&program, &model, &typed).map_err(sorted)?;
+    let as_diagnostics = |found: &[check::Warning]| -> Vec<Diagnostic> {
+        sorted(
+            found
+                .iter()
+                .map(|warning| Diagnostic::warning(warning.pos, warning.message.clone()))
+                .collect(),
+        )
+    };
     if last == Step::Place {
-        return text(print(Detail::Placed(&typed, &placed)));
+        let text = print(Detail::Typed(&typed));
+        return Ok(Outcome::Text(text, as_diagnostics(&placed.warnings)));
     }
     let grounded = ground::ground(&typed, &placed);
     if last == Step::Ground {
-        return text(print(Detail::Grounded(&typed, &grounded, &[])));
+        let text = print(Detail::Grounded(&typed, &grounded, &[]));
+        return Ok(Outcome::Text(text, as_diagnostics(&placed.warnings)));
     }
-    let found = check::check(&program, &model, &typed, &grounded).map_err(sorted)?;
-    let warnings: Vec<Diagnostic> = found
-        .iter()
-        .map(|warning| Diagnostic::warning(warning.pos, warning.message.clone()))
-        .collect();
+    let mut found = placed.warnings.clone();
+    found.extend(check::check(&program, &model, &typed, &grounded).map_err(sorted)?);
+    let warnings = as_diagnostics(&found);
     if last == Step::Check {
         let text = print(Detail::Grounded(&typed, &grounded, &found));
         return Ok(Outcome::Text(text, warnings));
@@ -238,227 +252,252 @@ fn run(source: &str, inputs: &Inputs, last: Step, bytes: bool) -> Result<Outcome
 mod tests {
     use super::*;
 
+    /// A workbook of one sheet, `main`, for the bindings in `body`, which start on line 6.
+    fn file(body: &str) -> String {
+        format!(
+            "yup 0.2\nworkbook : Workbook\nworkbook = {{ sheets = [main] }}\nmain : Sheet\nmain = \
+             {{ name = 'Main' }}\n{body}"
+        )
+    }
+
+    fn text(body: &str, step: Step) -> String {
+        show(&file(body), step, &Inputs::new())
+            .unwrap_or_else(|errors| panic!("{errors:?}"))
+            .text
+    }
+
+    fn errors(body: &str, step: Step) -> Vec<String> {
+        show(&file(body), step, &Inputs::new())
+            .expect_err("the source is wrong")
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    /// What `text` shows after the five lines that `file` adds.
+    fn body(text: &str) -> String {
+        text.lines()
+            .skip(5)
+            .map(|line| format!("{line}\n"))
+            .collect()
+    }
+
     const FORECAST: &str = "\
-yup 0.1
-sheet 'Inputs'
-horizon : 'Horizon' Input
+horizon_label : Label _ at main B2
+horizon_label = \"Horizon\"
+horizon : Value Number _ horizon_label right 2
 horizon = 5
-sheet 'Forecast'
-heading 'Revenue'
-period : 'Period'
+period : Formula _ horizon down 2
 period = 1 .. horizon
-revenue : 'Revenue'
+revenue : Formula _ period down
 revenue = 100 * 1.1 ^ period
-growth : 'Growth'
+growth : Formula _ revenue down 1 right 1 from west
 growth = tail revenue / lag 1 revenue - 1
 ";
 
-    const SEGMENTS: &str = "\
-yup 0.1
-s : Size Fixed
-s = 3
-base : [s, 1] 'Base' Input
-base = [100; 200; 300]
-year : 'Year'
-year = 1 .. 5
-revenue : 'Revenue'
-revenue = base * 1.1 ^ year
-total : 'Total'
-total = sum_columns revenue
-";
-
-    fn text(source: &str, step: Step) -> String {
-        show(source, step, &Inputs::new()).expect("runs").text
-    }
-
     #[test]
-    fn infer_writes_sizes_and_spans_into_the_signatures() {
+    fn infer_writes_types_sizes_and_spans_into_the_signatures() {
         assert_eq!(
-            text(FORECAST, Step::Infer),
+            body(&text(FORECAST, Step::Infer)),
             "\
-yup 0.1
-sheet 'Inputs'
-horizon : [1, 1] 'Horizon' Input
+horizon_label : Label _ [1, 1] at main B2
+horizon_label = \"Horizon\"
+horizon : Value Number _ [1, 1] horizon_label right 2
 horizon = 5
-sheet 'Forecast'
-heading 'Revenue'
 period_n : Size Unknown
-period : [1, period_n] 'Period'
+period : Formula Number _ [1, period_n] horizon down 2
 period = 1 .. horizon
-revenue : [1, period_n] 'Revenue'
+revenue : Formula Number _ [1, period_n] period down
 revenue = 100 * 1.1 ^ period
-growth : [1, period_n - 1] from [0, 1] 'Growth'
+growth : Formula Number _ [1, period_n - 1] start [0, 1] revenue down 1 right 1 from west
 growth = tail revenue / lag 1 revenue - 1
 "
         );
     }
 
     #[test]
-    fn place_follows_the_order_of_the_file() {
-        assert_eq!(
-            text(FORECAST, Step::Place),
-            "\
-yup 0.1
-sheet 'Inputs'
-horizon : [1, 1] 'Horizon' @ (2, 4) Input
-horizon = 5
-sheet 'Forecast'
-heading 'Revenue' @ (2, 2)
-period_n : Size Unknown
-period : [1, period_n] 'Period' @ (3, 4)
-period = 1 .. horizon
-revenue : [1, period_n] 'Revenue' @ (4, 4)
-revenue = 100 * 1.1 ^ period
-growth : [1, period_n - 1] from [0, 1] 'Growth' @ (5, 5)
-growth = tail revenue / lag 1 revenue - 1
-"
-        );
+    fn ground_writes_every_place_as_a_cell() {
+        let grounded = body(&text(FORECAST, Step::Ground));
+        for line in [
+            "horizon : Value Number _ [1, 1] at main D2",
+            "period : Formula Number _ [1, period_n] at main D4",
+            "revenue : Formula Number _ [1, period_n] at main D5",
+            "growth : Formula Number _ [1, period_n - 1] start [0, 1] at main E6",
+        ] {
+            assert!(grounded.contains(line), "{line}\n{grounded}");
+        }
     }
 
     #[test]
     fn ground_replaces_fixed_sizes_by_their_values() {
-        let placed = text(SEGMENTS, Step::Place);
+        let source = "s : Size Fixed\ns = 3\nbase : Formula _ [s, 1] at main D2\nbase = [100; \
+                      200; 300]\nyear : Formula _ base down 1\nyear = 1 .. 5\ntotal : Formula _ \
+                      year down 1\ntotal = sum_columns (base * 1.1 ^ year)\n";
+        let grounded = text(source, Step::Ground);
         assert!(
-            placed.contains("revenue : [s, 5] 'Revenue' @ (s + 3, 4)"),
-            "{placed}"
-        );
-        assert!(
-            placed.contains("total : [1, 5] 'Total' @ (2 * s + 3, 4)"),
-            "{placed}"
-        );
-        let grounded = text(SEGMENTS, Step::Ground);
-        assert!(
-            grounded.contains("revenue : [3, 5] 'Revenue' @ (6, 4)"),
+            grounded.contains("year : Formula Number _ [1, 5] at main D5"),
             "{grounded}"
         );
         assert!(
-            grounded.contains("total : [1, 5] 'Total' @ (9, 4)"),
+            grounded.contains("base : Formula Number _ [3, 1] at main D2"),
             "{grounded}"
         );
     }
 
     #[test]
-    fn lower_writes_formulas_and_names() {
+    fn lower_writes_formulas_values_labels_and_names() {
         assert_eq!(
             text(FORECAST, Step::Lower),
             "\
-sheet 'Inputs'
-  B2     'Horizon'
-  D2     5  [input]
-sheet 'Forecast'
-  B2     'Revenue'  [bold]
-  B3     'Period'
-  D3     =_xlfn.SEQUENCE(1,horizon)
-  B4     'Revenue'
-  D4     =100*1.1^period
-  B5     'Growth'
-  E5     =_xlfn.DROP(revenue,,1)/_xlfn.DROP(revenue,,-1)-1
+sheet 'Main'
+  B2     \"Horizon\"
+  D2     5
+  D4     =_xlfn.SEQUENCE(1,horizon)
+  D5     =100*1.1^period
+  E6     =_xlfn.DROP(revenue,,1)/_xlfn.DROP(revenue,,-1)-1
 names
-  growth = _xlfn.ANCHORARRAY(Forecast!$E$5)
-  horizon = Inputs!$D$2
-  period = _xlfn.ANCHORARRAY(Forecast!$D$3)
-  revenue = _xlfn.ANCHORARRAY(Forecast!$D$4)
+  growth = _xlfn.ANCHORARRAY(Main!$E$6)
+  horizon = Main!$D$2
+  period = _xlfn.ANCHORARRAY(Main!$D$4)
+  revenue = _xlfn.ANCHORARRAY(Main!$D$5)
 "
         );
     }
 
     #[test]
-    fn lower_writes_list_inputs_cell_by_cell() {
-        let listing = text(SEGMENTS, Step::Lower);
+    fn styles_cascade_their_font_from_the_sheet_and_the_workbook() {
+        let source = "\
+yup 0.2
+workbook : Workbook
+workbook = { sheets = [main], style = narrow }
+main : Sheet
+main = { name = 'Main', style = big, color = red }
+red : Style Color
+red = { red = 255 }
+narrow : Style Cell
+narrow = { font = { name = 'Arial Narrow' } }
+big : Style Cell
+big = { font = { size = 14 } }
+plain : Style Cell
+plain = { fill = red, border = { bottom = { weight = Double, color = red } } }
+a : Label plain at main B2
+a = \"A\"
+b : Formula _ a right 2
+b = 1 .. 3
+";
+        let listing = show(source, Step::Lower, &Inputs::new())
+            .expect("lowers")
+            .text;
         for line in [
-            "  D2     100  [input]",
-            "  D4     300  [input]",
-            "  D6     =base*1.1^year",
-            "  D9     =_xlfn.BYCOL(revenue,_xlfn.LAMBDA(_xlpm._x,SUM(_xlpm._x)))",
-            "  base = Sheet1!$D$2:$D$4",
+            "sheet 'Main'  [tab FF0000]",
+            "  B2     \"A\"  [font 'Arial Narrow', size 14, fill FF0000, bottom double FF0000]",
+            "  D2     =_xlfn.SEQUENCE(1,3)  [font 'Arial Narrow', size 14]",
+            "  E2     _  [font 'Arial Narrow', size 14]",
         ] {
             assert!(listing.contains(line), "{line}\n{listing}");
         }
     }
 
     #[test]
-    fn a_function_becomes_a_lambda_and_takes_the_shape_of_its_arguments() {
-        // The parameter `rate` hides the binding of the same name inside the function's body.
-        let source = "yup 0.1\nrate : 'Rate' Input\nrate = 0.1\ndiscount rate t = 1 / (1 + rate) \
-                      ^ t\nyears = 1 .. 3\nfactors : 'Factors'\nfactors = discount rate \
-                      years\none : 'One'\none = discount 0.2 1\n";
-        assert_eq!(
-            text(source, Step::Infer),
-            "yup 0.1\nsheet 'Sheet1'\nrate : [1, 1] 'Rate' Input\nrate = 0.1\ndiscount rate t = 1 \
-             / (1 + rate) ^ t\nyears : [1, 3]\nyears = 1 .. 3\nfactors : [1, 3] \
-             'Factors'\nfactors = discount rate years\none : [1, 1] 'One'\none = discount 0.2 1\n"
+    fn a_lambda_becomes_a_lambda_and_takes_the_shape_of_its_arguments() {
+        let source = "rate : Value Number _ at main D2\nrate = 0.1\ndiscount : Lambda Number -> \
+                      Number -> Number\ndiscount rate t = 1 / (1 + rate) ^ t\nfactors : Formula \
+                      _ rate down\nfactors = discount rate (1 .. 3)\none : Formula _ factors \
+                      down\none = discount 0.2 1\n";
+        let typed = text(source, Step::Infer);
+        assert!(
+            typed.contains("factors : Formula Number _ [1, 3] rate down"),
+            "{typed}"
         );
         let listing = text(source, Step::Lower);
         for line in [
             "  D3     =discount(rate,_xlfn.SEQUENCE(1,3))",
             "  D4     =discount(0.2,1)",
             "  discount = _xlfn.LAMBDA(_xlpm.rate,_xlpm.t,1/(1+_xlpm.rate)^_xlpm.t)",
-            "  one = Sheet1!$D$4",
+            "  one = Main!$D$4",
         ] {
             assert!(listing.contains(line), "{line}\n{listing}");
         }
     }
 
     #[test]
-    fn an_error_in_a_function_names_the_call() {
-        let source = "yup 0.1\nshift x = tail x / init x\ny = shift (1 .. 3)\n";
-        let errors = show(source, Step::Infer, &Inputs::new()).expect_err("misaligned");
+    fn an_error_in_a_lambda_names_the_call() {
+        let source = "shift : Lambda Number -> Number\nshift x = tail across x / init across \
+                      x\ny : Local\ny = shift (1 .. 3)\n";
         assert_eq!(
-            errors[0].to_string(),
-            "2:18: error: the two sides of `/` are misaligned along the columns: one covers \
-             positions [1, 3) and the other [0, 2); `lag` shifts a range along, and `tail` and \
-             `init` drop its ends, in `shift` as it is called at 3:5"
+            errors(source, Step::Infer),
+            [
+                "7:25: error: the two sides of `/` are misaligned along the columns: one covers \
+                 positions [1, 3) and the other [0, 2); `lag` shifts a range along, and `tail` \
+                 and `init` drop its ends, in `shift` as it is called at 9:5"
+            ]
         );
     }
 
     const LOAN: &str = "\
-yup 0.1
-due : 'Due'
+due : Formula _ at main D2
 due = [30, 30, 30, 30]
-opening : 'Opening'
-opening = lag 1 closing from 100
-paid : 'Paid'
+opening : Formula _ due down
+opening = lag 1 closing seed 100
+paid : Formula _ opening down
 paid = min due opening
-closing : 'Closing'
+closing : Formula _ paid down
 closing = opening - paid
 ";
 
     #[test]
     fn a_recurrence_becomes_a_scan_with_the_cycle_written_in_place() {
         let typed = text(LOAN, Step::Infer);
-        assert!(typed.contains("closing : [1, 4] 'Closing'"), "{typed}");
+        assert!(
+            typed.contains("closing : Formula Number _ [1, 4]"),
+            "{typed}"
+        );
         let listing = text(LOAN, Step::Lower);
         for line in [
             "  D3     =_xlfn.HSTACK(100,_xlfn.DROP(closing,,-1))",
             "  D4     =IF(due<opening,due,opening)",
-            "  D5     =_xlfn.SCAN(100,_xlfn.SEQUENCE(1,COLUMNS(due)),_xlfn.LAMBDA(_xlpm._balance,\
-             _xlpm._period,_xlpm._balance-_xlfn.LET(_xlpm._a,INDEX(due,1,_xlpm._period),_xlpm._b,\
-             _xlpm._balance,IF(_xlpm._a<_xlpm._b,_xlpm._a,_xlpm._b))))",
+            "  D5     =_xlfn.SCAN(100,_xlfn.SEQUENCE(1,COLUMNS(due)),_xlfn.LAMBDA(_xlpm._value,\
+             _xlpm._position,_xlpm._value-_xlfn.LET(_xlpm._a,INDEX(due,1,_xlpm._position),\
+             _xlpm._b,_xlpm._value,IF(_xlpm._a<_xlpm._b,_xlpm._a,_xlpm._b))))",
         ] {
             assert!(listing.contains(line), "{line}\n{listing}");
         }
     }
 
     #[test]
-    fn a_recurrence_needs_a_row_outside_it_to_give_its_length() {
-        let errors = show(
-            "yup 0.1\nopening = lag 1 closing from 100\nclosing = opening - 1\n",
-            Step::Infer,
-            &Inputs::new(),
-        )
-        .expect_err("no length");
+    fn a_recurrence_can_run_down_a_column() {
+        let source = "due : Formula _ at main D2\ndue = [30; 30; 30]\nopening : Formula _ due \
+                      right\nopening = lag 1 closing seed 100\nclosing : Formula _ opening \
+                      right\nclosing = opening - due\n";
+        let listing = text(source, Step::Lower);
+        for line in [
+            "  E2     =_xlfn.VSTACK(100,_xlfn.DROP(closing,-1))",
+            "  F2     =_xlfn.SCAN(100,_xlfn.SEQUENCE(ROWS(due)),_xlfn.LAMBDA(_xlpm._value,\
+             _xlpm._position,_xlpm._value-INDEX(due,_xlpm._position,1)))",
+        ] {
+            assert!(listing.contains(line), "{line}\n{listing}");
+        }
+    }
+
+    #[test]
+    fn a_recurrence_needs_a_line_outside_it_to_give_its_length() {
         assert_eq!(
-            errors[0].to_string(),
-            "3:1: error: nothing outside the cycle gives `closing` its length: it needs a row it \
-             uses period by period, such as a timeline"
+            errors(
+                "opening : Local\nopening = lag 1 closing seed 100\nclosing : Local\nclosing = \
+                 opening - 1\n",
+                Step::Infer
+            ),
+            [
+                "9:1: error: nothing outside the cycle gives `closing` its length: it needs a row \
+                 or a column it uses position by position, such as a timeline"
+            ]
         );
     }
 
     const SALES: &str = "\
-yup 0.1
-sales : 'Sales' Input
+sales : Value _ at main D2
 sales = csv \"sales.csv\"
-latest : 'Latest units'
+latest : Formula _ sales down 3
 latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (column \"units\" sales)
 ";
 
@@ -467,70 +506,58 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
     }
 
     #[test]
-    fn a_table_is_read_from_its_file_and_written_under_its_column_names() {
+    fn a_table_is_read_from_its_file_and_written_as_its_values() {
         let inputs = sales_inputs("year,units\n2024,10\n2025,12\n");
         assert_eq!(
-            input_files(SALES).expect("parses"),
+            input_files(&file(SALES)).expect("parses"),
             [InputFile {
                 name: "sales.csv".to_string(),
-                pos: Pos::new(3, 13)
+                pos: Pos::new(7, 13)
             }]
         );
-        let listing = show(SALES, Step::Lower, &inputs).expect("lowers").text;
+        let listing = show(&file(SALES), Step::Lower, &inputs)
+            .expect("lowers")
+            .text;
         for line in [
-            "  B2     'Sales'",
-            "  D2     'year'  [bold]",
-            "  E2     'units'  [bold]",
-            "  D3     2024  [input]",
-            "  E4     12  [input]",
-            "  D5     =_xlfn.XLOOKUP(MAX(INDEX(sales,0,1)),INDEX(sales,0,1),INDEX(sales,0,2))",
-            "  sales = Sheet1!$D$3:$E$4",
+            "  D2     2024",
+            "  E3     12",
+            "  D6     =_xlfn.XLOOKUP(MAX(INDEX(sales,0,1)),INDEX(sales,0,1),INDEX(sales,0,2))",
+            "  sales = Main!$D$2:$E$3",
         ] {
             assert!(listing.contains(line), "{line}\n{listing}");
         }
-        let placed = show(SALES, Step::Place, &inputs).expect("places").text;
+        let typed = show(&file(SALES), Step::Infer, &inputs)
+            .expect("infers")
+            .text;
         assert!(
-            placed.contains("sales : [2, 2] 'Sales' @ (3, 4) Input"),
-            "{placed}"
+            typed.contains("latest : Formula Number _ [1, 1] sales down 3"),
+            "{typed}"
         );
     }
 
     #[test]
     fn mistakes_with_tables_are_reported_where_they_are() {
-        let missing = show(SALES, Step::Resolve, &Inputs::new()).expect_err("no file");
+        let missing = show(&file(SALES), Step::Resolve, &Inputs::new()).expect_err("no file");
         assert_eq!(
             missing[0].to_string(),
-            "3:13: error: the input file `sales.csv` was not given"
+            "7:13: error: the input file `sales.csv` was not given"
         );
-        let short = show(SALES, Step::Resolve, &sales_inputs("year,units\n2024\n"))
-            .expect_err("a short row");
+        let short = show(
+            &file(SALES),
+            Step::Resolve,
+            &sales_inputs("year,units\n2024\n"),
+        )
+        .expect_err("a short row");
         assert_eq!(
             short[0].to_string(),
             "sales.csv:2:1: error: this row has 1 field, and the header has 2 fields"
-        );
-        let column = show(
-            "yup 0.1\nsales : 'Sales' Input\nsales = csv \"sales.csv\"\nx = column \"price\" \
-             sales\ny = csv \"other.csv\"\n",
-            Step::Resolve,
-            &sales_inputs("year,units\n2024,10\n"),
-        )
-        .expect_err("no such column");
-        let messages: Vec<String> = column.iter().map(ToString::to_string).collect();
-        assert_eq!(
-            messages,
-            [
-                "4:12: error: the table `sales` has no column `price`; its columns are year, \
-                 units",
-                "5:5: error: `csv` reads a file into an input, as the whole of its definition: \
-                 `history = csv \"history.csv\"`, with `Input` in its signature",
-            ]
         );
     }
 
     #[test]
     fn logical_operators_work_position_by_position() {
-        let source = "yup 0.1\nyears = 1 .. 4\nmiddle : 'Middle'\nmiddle = years > 1 && years < \
-                      4 || not (years /= 2)\n";
+        let source = "years : Local\nyears = 1 .. 4\nmiddle : Formula _ at main D2\nmiddle = \
+                      years > 1 && years < 4 || not (years /= 2)\n";
         let listing = text(source, Step::Lower);
         assert!(
             listing.contains(
@@ -541,28 +568,21 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
     }
 
     #[test]
-    fn a_local_binding_is_written_into_the_formulas_that_use_it() {
-        let source = "yup 0.1\nyears = 1 .. 4\nprior = lag 1 years\nratio : 'Ratio'\nratio = \
-                      tail years / prior\nlow : 'Low'\nlow = min (years * 2) 3\n";
+    fn a_column_of_whole_numbers_is_written_as_one() {
+        let source = "col : Formula _ at main D2\ncol = transpose (2 .. 4)\nfirst : Formula _ \
+                      col right\nfirst = init col\n";
         let listing = text(source, Step::Lower);
-        assert!(
-            listing.contains(
-                "=_xlfn.DROP(_xlfn.SEQUENCE(1,4),,1)/_xlfn.DROP(_xlfn.SEQUENCE(1,4),,-1)"
-            ),
-            "{listing}"
-        );
-        assert!(
-            listing.contains(
-                "=_xlfn.LET(_xlpm._a,_xlfn.SEQUENCE(1,4)*2,_xlpm._b,3,IF(_xlpm._a<_xlpm._b,_xlpm._a,\
-                 _xlpm._b))"
-            ),
-            "{listing}"
-        );
+        for line in [
+            "  D2     =_xlfn.SEQUENCE(3,1,2)",
+            "  E2     =_xlfn.DROP(col,-1)",
+        ] {
+            assert!(listing.contains(line), "{line}\n{listing}");
+        }
     }
 
     #[test]
     fn build_gives_an_xlsx_with_every_part() {
-        let built = build(FORECAST, &Inputs::new()).expect("builds");
+        let built = build(&file(FORECAST), &Inputs::new()).expect("builds");
         let names: Vec<String> = zip::read(&built.xlsx)
             .into_iter()
             .map(|(name, _)| name)
@@ -578,11 +598,10 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
                 "xl/sharedStrings.xml",
                 "xl/metadata.xml",
                 "xl/worksheets/sheet1.xml",
-                "xl/worksheets/sheet2.xml",
             ]
         );
         assert_eq!(
-            build(FORECAST, &Inputs::new()).expect("builds again"),
+            build(&file(FORECAST), &Inputs::new()).expect("builds again"),
             built,
             "the same bytes"
         );
@@ -590,69 +609,83 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
 
     #[test]
     fn showing_a_shown_file_changes_nothing() {
-        for source in [FORECAST, SEGMENTS] {
+        for source in [file(FORECAST), file(LOAN)] {
             for step in Step::ALL.into_iter().filter(|&step| step <= Step::Check) {
-                let once = text(source, step);
-                assert_eq!(text(&once, step), once, "{}", step.name());
+                let once = show(&source, step, &Inputs::new()).expect("shows").text;
+                let twice = show(&once, step, &Inputs::new()).expect("shows again").text;
+                assert_eq!(twice, once, "{}", step.name());
             }
         }
     }
 
     #[test]
-    fn nothing_goes_below_a_range_of_unknown_height() {
-        let source = "yup 0.1\nh : 'H' Input\nh = 3\ndown : 'Down'\ndown = transpose (1 .. \
-                      h)\nafter : 'After'\nafter = 1\n";
-        let errors = show(source, Step::Place, &Inputs::new()).expect_err("blocked");
+    fn nothing_is_counted_from_the_far_side_of_an_unknown_extent() {
+        let source = "h : Value Number _ at main D2\nh = 3\nrow : Formula _ h down\nrow = 1 .. \
+                      h\nafter : Formula _ row right\nafter = 1\n";
         assert_eq!(
-            errors[0].to_string(),
-            "6:1: error: `after` would go below `down`, whose height, down_n, is unknown when \
-             the file is written; move it above `down`, onto another sheet, or pin it with `@`"
+            errors(source, Step::Place),
+            [
+                "10:23: error: `after` counts from the east side of `row`, whose width, row_n, \
+                 is unknown when the file is written; count from its west side, with `from \
+                 west`, or place `after` elsewhere"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_placement_that_does_not_line_up_is_a_warning() {
+        let source =
+            format!("{FORECAST}late : Formula _ growth down\nlate = tail (tail revenue)\n");
+        let shown = show(&file(&source), Step::Check, &Inputs::new()).expect("only a warning");
+        assert_eq!(
+            shown
+                .warnings
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            [
+                "16:1: warning: `late` does not line up with `growth`: the two share period_n \
+                 along their columns, but position 2 of `late` is in column E and of `growth` in \
+                 column F"
+            ]
         );
     }
 
     #[test]
     fn check_finds_collisions_and_possible_spills() {
-        let clash = "yup 0.1\na : 'A' @ (2, 4)\na = 1\nb : 'B' @ (2, 4)\nb = 2\n";
-        let errors: Vec<String> = show(clash, Step::Check, &Inputs::new())
-            .expect_err("collides")
-            .iter()
-            .map(ToString::to_string)
-            .collect();
+        let clash = "a : Value _ at main D2\na = 1\nb : Value _ a right 0\nb = 2\n";
         assert_eq!(
-            errors,
-            [
-                "4:1: error: the label of `a` and the label of `b` would share the cell (2, 2)",
-                "4:1: error: `a` and `b` would share the cell (2, 4)",
-            ]
+            errors(clash, Step::Check),
+            ["8:1: error: `a` and `b` would share the cell D2"]
         );
-        let spill = "yup 0.1\nh : 'H' Input\nh = 3\nrow : 'Row'\nrow = 1 .. h\nside : 'Side' @ \
-                     (3, 9)\nside = 1\n";
-        let shown = show(spill, Step::Check, &Inputs::new()).expect("only a warning");
+        let spill = "h : Value Number _ at main D2\nh = 3\nrow : Formula _ h down\nrow = 1 .. \
+                     h\nside : Value _ at main I3\nside = 1\n";
+        let shown = show(&file(spill), Step::Check, &Inputs::new()).expect("only a warning");
         assert_eq!(
             shown.warnings[0].to_string(),
-            "4:1: warning: `row` spills into `side` once row_n grows large enough; the workbook \
+            "8:1: warning: `row` spills into `side` once row_n grows large enough; the workbook \
              would show #SPILL!"
         );
         assert!(shown.text.contains(
-            "row : [1, row_n] 'Row' @ (3, 4) // warning: `row` spills into `side` once row_n \
-             grows large enough; the workbook would show #SPILL!"
+            "row : Formula Number _ [1, row_n] at main D3 // warning: `row` spills into `side` \
+             once row_n grows large enough; the workbook would show #SPILL!"
         ));
-        assert_eq!(text(&shown.text, Step::Check), shown.text);
-    }
-
-    #[test]
-    fn resolve_writes_out_the_default_sheet() {
         assert_eq!(
-            text("yup 0.1\nx : 'X'\nx = 1\n", Step::Resolve),
-            "yup 0.1\nsheet 'Sheet1'\nx : 'X'\nx = 1\n"
+            show(&shown.text, Step::Check, &Inputs::new())
+                .expect("shows again")
+                .text,
+            shown.text
         );
     }
 
     #[test]
     fn problems_come_in_the_order_of_the_file() {
-        let errors = show("yup 0.1\nb = c\na = d\n", Step::Resolve, &Inputs::new())
-            .expect_err("unknown names");
-        let lines: Vec<u32> = errors.iter().map(|e| e.pos.line).collect();
-        assert_eq!(lines, [2, 3]);
+        assert_eq!(
+            errors("b : Local\nb = c\na : Local\na = d\n", Step::Resolve),
+            [
+                "7:5: error: unknown name `c`",
+                "9:5: error: unknown name `d`"
+            ]
+        );
     }
 }

@@ -2,6 +2,11 @@
 //!
 //! Lower is the only step that writes these; before it, a cell is a pair of numbers.
 
+/// The number of rows on a sheet, from the spreadsheet app's published limits.
+pub const MAX_ROWS: i64 = 1_048_576;
+/// The number of columns on a sheet, from the spreadsheet app's published limits.
+pub const MAX_COLUMNS: i64 = 16_384;
+
 /// The name of a column: 1 is `A`, 26 is `Z`, 27 is `AA`.
 pub fn column_name(column: u32) -> String {
     let mut letters = Vec::new();
@@ -22,6 +27,24 @@ pub fn cell_name(row: u32, column: u32) -> String {
 /// A cell in A1 notation, fixed against copying, such as `$D$3`.
 pub fn absolute(row: u32, column: u32) -> String {
     format!("${}${row}", column_name(column))
+}
+
+/// The row and column of a cell written in A1 notation, such as `B2`, if it is one on a sheet.
+pub fn parse_cell(text: &str) -> Option<(i64, i64)> {
+    let letters = text.bytes().take_while(u8::is_ascii_uppercase).count();
+    let digits = &text[letters..];
+    if !(1..=3).contains(&letters)
+        || digits.is_empty()
+        || digits.starts_with('0')
+        || !digits.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let column = text[..letters].bytes().fold(0_i64, |column, letter| {
+        column * 26 + i64::from(letter - b'A' + 1)
+    });
+    let row: i64 = digits.parse().ok()?;
+    ((1..=MAX_ROWS).contains(&row) && column <= MAX_COLUMNS).then_some((row, column))
 }
 
 /// A sheet name as a formula refers to it: as it is when it is a plain name, quoted otherwise.
@@ -84,6 +107,15 @@ mod tests {
         assert_eq!(names, ["A", "D", "Z", "AA", "AZ", "AAA", "XFD"]);
         assert_eq!(cell_name(3, 4), "D3");
         assert_eq!(absolute(3, 4), "$D$3");
+    }
+
+    #[test]
+    fn cells_read_back_from_their_names() {
+        assert_eq!(parse_cell("B2"), Some((2, 2)));
+        assert_eq!(parse_cell("XFD1048576"), Some((1_048_576, 16_384)));
+        for wrong in ["XFE1", "A0", "A01", "B", "2", "b2", "ABCD1", "A1048577"] {
+            assert_eq!(parse_cell(wrong), None, "{wrong}");
+        }
     }
 
     #[test]

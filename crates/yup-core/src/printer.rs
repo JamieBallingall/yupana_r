@@ -3,9 +3,14 @@
 //! Every step up to Check shows its result this way. The spacing and the parentheses are the
 //! printer's own, so reading a printed file and printing it again gives the same text.
 
+use crate::cells::cell_name;
 use crate::syntax::{
-    BinOp, Coord, Expr, ExprKind, Item, ItemKind, Program, Signature, SizeKind, SizeSyntax,
+    BinOp, Expr, ExprKind, Field, Item, ItemKind, Placement, Program, Signature, SizeKind,
+    SizeSyntax, StyleName, Type,
 };
+
+/// The widest line the printer writes a record on before it gives each field a line of its own.
+const WIDTH: usize = 100;
 
 /// Prints a whole file.
 pub fn print(program: &Program) -> String {
@@ -38,12 +43,6 @@ fn item_text(item: &Item) -> String {
     match &item.kind {
         ItemKind::Blank => String::new(),
         ItemKind::Comment(text) => format!("//{text}"),
-        ItemKind::Sheet(name) => format!("sheet {}", quote_text(&name.value)),
-        ItemKind::Heading { text, at } => match at {
-            Some(at) => format!("heading {} @ {}", quote_text(&text.value), coord(at)),
-            None => format!("heading {}", quote_text(&text.value)),
-        },
-        ItemKind::Gap => "gap".to_string(),
         ItemKind::Size { name, kind } => {
             let kind = match kind {
                 SizeKind::Fixed => "Fixed",
@@ -58,38 +57,90 @@ fn item_text(item: &Item) -> String {
                 head.push(' ');
                 head.push_str(&param.name);
             }
-            format!("{head} = {}", expression(expr))
+            let line = format!("{head} = {}", expression(expr));
+            if line.chars().count() <= WIDTH {
+                return line;
+            }
+            // A long record gives each field a line of its own, commas first.
+            match &expr.kind {
+                ExprKind::Record(fields) => format!("{head} =\n{}", field_lines(fields)),
+                ExprKind::Update { base, fields } => {
+                    let mut base_text = String::new();
+                    write_expr(&mut base_text, base, ATOM);
+                    format!("{head} = {base_text}\n{}", field_lines(fields))
+                }
+                _ => line,
+            }
         }
     }
 }
 
+fn field_lines(fields: &[Field]) -> String {
+    let mut out = String::new();
+    for (index, field) in fields.iter().enumerate() {
+        out.push_str(if index == 0 { "  { " } else { "  , " });
+        out.push_str(&field.name.name);
+        out.push_str(" = ");
+        write_expr(&mut out, &field.value, LOOSE);
+        out.push('\n');
+    }
+    out.push_str("  }");
+    out
+}
+
 fn signature(sig: &Signature) -> String {
-    let mut parts = vec![format!("{} :", sig.name.name)];
+    let mut parts = vec![format!("{} :", sig.name.name), sig.role.word().to_string()];
+    if let Some((ty, _)) = &sig.ty {
+        parts.push(type_text(ty));
+    }
+    match &sig.style {
+        Some(StyleName::Default(_)) => parts.push("_".to_string()),
+        Some(StyleName::Named(name)) => parts.push(name.name.clone()),
+        None => {}
+    }
     if let Some(shape) = &sig.shape {
         parts.push(format!("[{}, {}]", size(&shape.rows), size(&shape.columns)));
     }
-    if let Some(from) = &sig.from {
-        parts.push(format!("from [{}, {}]", from.row, from.column));
+    if let Some(start) = &sig.start {
+        parts.push(format!("start [{}, {}]", start.row, start.column));
     }
-    if let Some(label) = &sig.label {
-        parts.push(quote_text(&label.value));
-    }
-    if let Some(at) = &sig.at {
-        parts.push(format!("@ {}", coord(at)));
-    }
-    if sig.input.is_some() {
-        parts.push("Input".to_string());
-    }
-    if let Some(format) = &sig.format {
-        parts.push(format!("Format {}", quote_string(&format.value)));
-    }
-    if sig.bold.is_some() {
-        parts.push("Bold".to_string());
-    }
-    if sig.italic.is_some() {
-        parts.push("Italic".to_string());
+    match &sig.place {
+        Some(Placement::At {
+            sheet, row, column, ..
+        }) => {
+            let cell = cell_name(
+                u32::try_from(*row).expect("the parser keeps a cell on the sheet"),
+                u32::try_from(*column).expect("the parser keeps a cell on the sheet"),
+            );
+            parts.push(format!("at {} {cell}", sheet.name));
+        }
+        Some(Placement::Beside { reference, moves }) => {
+            parts.push(reference.name.clone());
+            for step in moves {
+                parts.push(step.direction.word().to_string());
+                if let Some(distance) = step.distance {
+                    parts.push(distance.to_string());
+                }
+                if let Some(side) = step.from {
+                    parts.push(format!("from {}", side.word()));
+                }
+            }
+        }
+        None => {}
     }
     parts.join(" ")
+}
+
+fn type_text(ty: &Type) -> String {
+    match ty {
+        Type::Cell(ty) => ty.word().to_string(),
+        Type::Function(types) => types
+            .iter()
+            .map(|ty| ty.word())
+            .collect::<Vec<_>>()
+            .join(" -> "),
+        Type::Style(ty) => ty.word().to_string(),
+    }
 }
 
 /// Prints a size: its variables first, then its constant, as in `n - 1`.
@@ -115,11 +166,7 @@ pub fn size(size: &SizeSyntax) -> String {
     text
 }
 
-fn coord(coord: &Coord) -> String {
-    format!("({}, {})", size(&coord.row), size(&coord.column))
-}
-
-/// Quotes a label or a sheet name, doubling any quote inside.
+/// Quotes a setting, such as a sheet name, doubling any quote inside.
 pub fn quote_text(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
 }
@@ -177,10 +224,31 @@ fn precedence(expr: &Expr) -> u8 {
         ExprKind::Apply { .. } => APPLICATION,
         ExprKind::Number { .. }
         | ExprKind::Str(_)
+        | ExprKind::Text(_)
         | ExprKind::Bool(_)
         | ExprKind::Name(_)
-        | ExprKind::List(_) => ATOM,
+        | ExprKind::Constructor(_)
+        | ExprKind::List(_)
+        | ExprKind::Record(_)
+        | ExprKind::Update { .. } => ATOM,
     }
+}
+
+fn write_fields(out: &mut String, fields: &[Field]) {
+    if fields.is_empty() {
+        out.push_str("{}");
+        return;
+    }
+    out.push_str("{ ");
+    for (index, field) in fields.iter().enumerate() {
+        if index > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&field.name.name);
+        out.push_str(" = ");
+        write_expr(out, &field.value, LOOSE);
+    }
+    out.push_str(" }");
 }
 
 fn write_expr(out: &mut String, expr: &Expr, context: u8) {
@@ -191,16 +259,26 @@ fn write_expr(out: &mut String, expr: &Expr, context: u8) {
     match &expr.kind {
         ExprKind::Number { text, .. } => out.push_str(text),
         ExprKind::Str(value) => out.push_str(&quote_string(value)),
-        ExprKind::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
-        ExprKind::Name(name) => out.push_str(name),
-        ExprKind::Apply { func, args, seed } => {
+        ExprKind::Text(value) => out.push_str(&quote_text(value)),
+        ExprKind::Bool(value) => out.push_str(if *value { "True" } else { "False" }),
+        ExprKind::Name(name) | ExprKind::Constructor(name) => out.push_str(name),
+        ExprKind::Apply {
+            func,
+            axis,
+            args,
+            seed,
+        } => {
             out.push_str(&func.name);
+            if let Some(axis) = axis {
+                out.push(' ');
+                out.push_str(axis.word());
+            }
             for arg in args {
                 out.push(' ');
                 write_expr(out, arg, ATOM);
             }
             if let Some(seed) = seed {
-                out.push_str(" from ");
+                out.push_str(" seed ");
                 write_expr(out, seed, ATOM);
             }
         }
@@ -256,6 +334,12 @@ fn write_expr(out: &mut String, expr: &Expr, context: u8) {
             out.push_str(" .. ");
             write_expr(out, last, OR);
         }
+        ExprKind::Record(fields) => write_fields(out, fields),
+        ExprKind::Update { base, fields } => {
+            write_expr(out, base, ATOM);
+            out.push(' ');
+            write_fields(out, fields);
+        }
     }
     if parens {
         out.push(')');
@@ -273,28 +357,42 @@ mod tests {
 
     #[test]
     fn printing_is_canonical() {
-        let source = "yup 0.1\n\n\n// Inputs\nsheet 'Inputs'\nh : 'Horizon''s end'   Input\nh = \
+        let source = "yup 0.2\n\n\n// Values\nh : Value   Number _ at  sheet  B2\nh = \
                       5 // years\n\nx=(1+2)*3-(4-5)\ny = - (2 ^ 2)  ++ \"a\\\"b\"\nz=[1,2;3,4]\n\n";
         assert_eq!(
             reprint(source),
-            "yup 0.1\n// Inputs\nsheet 'Inputs'\nh : 'Horizon''s end' Input\nh = 5 // \
+            "yup 0.2\n// Values\nh : Value Number _ at sheet B2\nh = 5 // \
              years\n\nx = (1 + 2) * 3 - (4 - 5)\ny = -2 ^ 2 ++ \"a\\\"b\"\nz = [1, 2; 3, 4]\n"
+        );
+    }
+
+    #[test]
+    fn a_long_record_gives_each_field_a_line() {
+        let source = "yup 0.2\ngrand_total = money { font = { bold = True, name = 'Arial' }, border \
+                      = { top = { weight = Thin }, bottom = { weight = Double } } }\n";
+        assert_eq!(
+            reprint(source),
+            "yup 0.2\ngrand_total = money\n  { font = { bold = True, name = 'Arial' }\n  , border \
+             = { top = { weight = Thin }, bottom = { weight = Double } }\n  }\n"
         );
     }
 
     #[test]
     fn printing_twice_changes_nothing() {
         let sources = [
-            "yup 0.1\nx = (a - b) - (c - d)\n",
-            "yup 0.1\nx = 2 ^ 3 ^ 2 + (2 ^ 3) ^ 2\n",
-            "yup 0.1\nx = (-a) ^ 2 + -(a * b) - -c\n",
-            "yup 0.1\nx = if a > b then 1 .. n else f (g x) y\n",
-            "yup 0.1\nx = 1 + (if c then 2 else 3)\n",
-            "yup 0.1\nx = (a ++ b) ++ c ++ d\n",
-            "yup 0.1\nx = a || b && c || not d && (e || f)\n",
-            "yup 0.1\nx = (a || b) .. c\n",
-            "yup 0.1\nx = lag 1 (a + b) from (c * 2)\n",
-            "yup 0.1\nx : [s + 4, 2 * n - 1] from [0, 1] @ (4 + s, 5) 'L' Format \"0%\" Bold\n",
+            "yup 0.2\nx = (a - b) - (c - d)\n",
+            "yup 0.2\nx = 2 ^ 3 ^ 2 + (2 ^ 3) ^ 2\n",
+            "yup 0.2\nx = (-a) ^ 2 + -(a * b) - -c\n",
+            "yup 0.2\nx = if a > b then 1 .. n else f (g x) y\n",
+            "yup 0.2\nx = 1 + (if c then 2 else 3)\n",
+            "yup 0.2\nx = (a ++ b) ++ c ++ d\n",
+            "yup 0.2\nx = a || b && c || not d && (e || f)\n",
+            "yup 0.2\nx = (a || b) .. c\n",
+            "yup 0.2\nx = lag down 1 (a + b) seed (c * 2)\n",
+            "yup 0.2\nx : Formula Number s [s + 4, 2 * n - 1] start [0, 1] y down 2 right 1 from west\n",
+            "yup 0.2\nx : Lambda Number -> Text -> Logical\n",
+            "yup 0.2\nx = base { a = { b = Thin }, c = 'x''y' }\n",
+            "yup 0.2\nx = { a = 1 }\n",
         ];
         for source in sources {
             let once = reprint(source);
@@ -302,7 +400,7 @@ mod tests {
         }
         assert_eq!(
             reprint(sources[0]),
-            "yup 0.1\nx = a - b - (c - d)\n",
+            "yup 0.2\nx = a - b - (c - d)\n",
             "left-grouped operators drop parentheses on the left only"
         );
     }

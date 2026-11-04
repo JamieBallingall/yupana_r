@@ -85,6 +85,16 @@ impl SizeExpr {
         sum
     }
 
+    /// This size less another. Only a cell is worked out this way, never an extent, so the
+    /// result may have a negative coefficient until its fixed sizes are replaced by their values.
+    pub fn minus(&self, other: &SizeExpr) -> SizeExpr {
+        let mut difference = self.offset(other.constant.saturating_neg());
+        for (var, coefficient) in other.terms() {
+            difference.add_term(var, coefficient.saturating_neg());
+        }
+        difference
+    }
+
     /// The size with each variable that `value` knows replaced by its value.
     pub fn substitute(&self, value: impl Fn(usize) -> Option<i64>) -> SizeExpr {
         let mut result = SizeExpr::constant(self.constant);

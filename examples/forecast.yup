@@ -1,64 +1,146 @@
-yup 0.1
+yup 0.2
 
-// A revenue and profit forecast for an invented company. The horizon is an input:
-// change it in the workbook, and every row of the forecast resizes to match.
+// A revenue and profit forecast for an invented company. The horizon is a value: change it in
+// the workbook, and every row of the forecast resizes to match.
 
-sheet 'Inputs'
+workbook : Workbook
+workbook = { sheets = [inputs, forecast] }
 
-forecast_horizon : 'Forecast horizon (years)' Input
-forecast_horizon = 5
+inputs : Sheet
+inputs = { name = 'Inputs' }
 
-base_revenue : 'Revenue in the base year' Input Format "#,##0"
+forecast : Sheet
+forecast = { name = 'Forecast' }
+
+// Styles. Values a reader may change are blue, as financial models usually show them.
+
+blue : Style Color
+blue = { red = 0, green = 0, blue = 255 }
+
+label : Style Cell
+label = { format = '@' }
+
+heading : Style Cell
+heading = label { font = { bold = True } }
+
+input : Style Cell
+input = { font = { color = blue } }
+
+input_money : Style Cell
+input_money = input { format = '#,##0' }
+
+input_percent : Style Cell
+input_percent = input { format = '0.0%' }
+
+money : Style Cell
+money = { format = '#,##0' }
+
+percent : Style Cell
+percent = { format = '0.0%' }
+
+factor : Style Cell
+factor = { format = '0.000' }
+
+total : Style Cell
+total = money { font = { bold = True } }
+
+// Inputs
+
+horizon_label : Label label at inputs B2
+horizon_label = "Forecast horizon (years)"
+
+horizon : Value Number input horizon_label right 2
+horizon = 5
+
+base_label : Label label horizon_label down
+base_label = "Revenue in the base year"
+
+base_revenue : Value Number input_money base_label right 2
 base_revenue = 1200
 
-revenue_growth : 'Revenue growth per year' Input Format "0.0%"
+growth_rate_label : Label label base_label down
+growth_rate_label = "Revenue growth per year"
+
+revenue_growth : Value Number input_percent growth_rate_label right 2
 revenue_growth = 0.06
 
-ebitda_margin : 'EBITDA margin' Input Format "0.0%"
+margin_label : Label label growth_rate_label down
+margin_label = "EBITDA margin"
+
+ebitda_margin : Value Number input_percent margin_label right 2
 ebitda_margin = 0.22
 
-discount_rate : 'Discount rate' Input Format "0.0%"
+rate_label : Label label margin_label down
+rate_label = "Discount rate"
+
+discount_rate : Value Number input_percent rate_label right 2
 discount_rate = 0.09
 
-// A function of its parameters. It has no cells of its own: it becomes a defined name in the
-// workbook, holding a LAMBDA, which can be called there as well as here.
+// A lambda has no cells of its own: it becomes a defined name in the workbook, holding a
+// LAMBDA, which can be called there as well as here.
+discount : Lambda Number -> Number -> Number
 discount rate years = 1 / (1 + rate) ^ years
 
-sheet 'Forecast'
+// Forecast
 
-heading 'Revenue'
+revenue_heading : Label heading at forecast B2
+revenue_heading = "Revenue"
 
-year : 'Year'
-year = 1 .. forecast_horizon
+year_label : Label label revenue_heading down
+year_label = "Year"
 
-// A binding without a label is local: it has no cells, and its formula is written
-// into the formulas that use it.
+year : Formula Number _ year_label right 2
+year = 1 .. horizon
+
+// A local has no cells: its formula is written into the formulas that use it.
+growth_factor : Local
 growth_factor = 1 + revenue_growth
 
-revenue : 'Revenue' Format "#,##0"
+revenue_label : Label label year_label down
+revenue_label = "Revenue"
+
+revenue : Formula Number money revenue_label right 2
 revenue = base_revenue * growth_factor ^ year
 
+prior_label : Label label revenue_label down
+prior_label = "Revenue a year earlier ☺"
+
 // `lag 1` shifts revenue one year along, so this row starts under year 2.
-prior_revenue : 'Revenue a year earlier ☺' Format "#,##0"
+prior_revenue : Formula Number money revenue down 1 right 1 from west
 prior_revenue = lag 1 revenue
 
-growth : 'Revenue growth, year on year' Format "0.0%"
+growth_label : Label label prior_label down
+growth_label = "Revenue growth, year on year"
+
+growth : Formula Number percent prior_revenue down
 growth = tail revenue / prior_revenue - 1
 
-gap
-heading 'Profit'
+profit_heading : Label heading growth_label down 2
+profit_heading = "Profit"
 
-ebitda : 'EBITDA' Format "#,##0"
+ebitda_label : Label label profit_heading down
+ebitda_label = "EBITDA"
+
+ebitda : Formula Number money ebitda_label right 2
 ebitda = revenue * ebitda_margin
 
-total_ebitda : 'EBITDA over the forecast' Format "#,##0" Bold
+total_ebitda_label : Label heading ebitda_label down
+total_ebitda_label = "EBITDA over the forecast"
+
+total_ebitda : Formula Number total total_ebitda_label right 2
 total_ebitda = sum ebitda
 
-gap
-heading 'Value'
+value_heading : Label heading total_ebitda_label down 2
+value_heading = "Value"
 
-discount_factor : 'Discount factor' Format "0.000"
+factor_label : Label label value_heading down
+factor_label = "Discount factor"
+
+discount_factor : Formula Number factor factor_label right 2
 discount_factor = discount discount_rate year
 
-present_value : 'Present value of EBITDA' Format "#,##0" Bold
+present_value_label : Label heading factor_label down
+present_value_label = "Present value of EBITDA"
+
+present_value : Formula Number total present_value_label right 2
 present_value = sum (ebitda * discount_factor)
