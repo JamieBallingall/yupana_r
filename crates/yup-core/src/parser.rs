@@ -462,6 +462,18 @@ impl Parser {
         let Token::Name(name) = self.peek().clone() else {
             return Ok(None);
         };
+        // A move straight after the style means the style was left out, and the reference read
+        // in its place.
+        if Direction::from_word(&name).is_some() {
+            return Err(Diagnostic::error(
+                self.pos(),
+                format!(
+                    "a move follows the binding it is made from; if `{name}` is meant to move from \
+                     the name before it, that name was read as the style, which comes first: write \
+                     a style, or `_` for the default, before it"
+                ),
+            ));
+        }
         if is_keyword(&name) {
             return Ok(None);
         }
@@ -1042,6 +1054,14 @@ mod tests {
                  right 2`, found the end of the line",
                 "4:24: error: a placement moves at most once along each axis: once left or right, \
                  and once up or down",
+            ]
+        );
+        assert_eq!(
+            errors("yup 0.2\nx : Formula Number revenue_label right 2\n"),
+            [
+                "2:34: error: a move follows the binding it is made from; if `right` is meant to \
+                 move from the name before it, that name was read as the style, which comes first: \
+                 write a style, or `_` for the default, before it"
             ]
         );
     }
