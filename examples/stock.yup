@@ -1,0 +1,65 @@
+yup 0.2
+
+// The stock of one product at an invented shop, week by week, down the rows. Deliveries and
+// sales are read from stock.csv beside this file, and the stock left at the end of each week is
+// carried down to the next.
+
+workbook : Workbook
+workbook = { sheets = [stock_sheet] }
+
+stock_sheet : Sheet
+stock_sheet = { name = 'Stock' }
+
+label : Style Cell
+label = { format = '@' }
+
+header : Style Cell
+header = label
+  { font   = { bold = True }
+  , border = { bottom = { weight = Thin } }
+  , align  = { horizontal = Center }
+  }
+
+units : Style Cell
+units = { format = '#,##0' }
+
+opening_label : Label label at stock_sheet B2
+opening_label = "Stock at the start"
+
+opening : Value Number units opening_label right 2
+opening = 120
+
+threshold_label : Label label opening_label down
+threshold_label = "Reorder below"
+
+threshold : Value Number units threshold_label right 2
+threshold = 50
+
+// A row of headers, each beside the one before, and the table and the formulas below them.
+week_header : Label header threshold_label down 2
+week_header = "Week"
+
+delivered_header : Label header week_header right
+delivered_header = "Delivered"
+
+sold_header : Label header delivered_header right
+sold_header = "Sold"
+
+stock_header : Label header sold_header right
+stock_header = "Stock"
+
+reorder_header : Label header stock_header right
+reorder_header = "Reorder?"
+
+weeks : Value units week_header down
+weeks = csv "stock.csv"
+
+// What is left at the end of a week is what was left the week before, plus what came in, less
+// what went out: a value carried from one row to the next, which the workbook works out with a
+// scan down the rows.
+stock : Formula Number units stock_header down
+stock = lag 1 stock seed opening + column "delivered" weeks - column "sold" weeks
+
+// A formula of logicals: whether each week ends below the threshold.
+reorder : Formula Logical _ reorder_header down
+reorder = stock < threshold
