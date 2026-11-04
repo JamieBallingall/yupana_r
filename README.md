@@ -47,7 +47,7 @@ things silently or bury the user in warnings.
 
 `yup build` writes the workbook, by default beside the `.yup` file. `yup show <step>` prints what
 any step makes of a file: the steps up to Check print a `.yup` file with more worked out, Lower
-prints the cells, and Package the parts of the xlsx file. [examples](examples) has six files to
+prints the cells, and Package the parts of the xlsx file. [examples](examples) has seven files to
 start from.
 
 ## Stage 1: scope

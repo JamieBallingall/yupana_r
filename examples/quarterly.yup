@@ -1,0 +1,1378 @@
+yup 0.2
+
+// A quarterly three-statement model of an invented maker of garden equipment. Every figure is
+// made up, in millions. Sales peak in the second quarter, when gardens do.
+//
+// Five sheets. Data holds twenty reported quarters, read from quarterly_history.csv. Historicals
+// spreads them out as statements, a quarter to a column. Assumptions holds the inputs for the
+// forecast: single values, and two tables read from quarterly_years.csv and
+// quarterly_quarters.csv. Analysis works out growth, margins and working-capital days from the
+// history, and where the forecast starts. Forecast runs twenty quarters of the three
+// statements, with the schedules behind them and some ratios.
+//
+// Revenue grows on the same quarter of the last reported year, so the seasons survive. Each
+// forecast year's growth is the history's compound annual growth, plus the effects of GDP
+// growth and of the company's own price changes, each measured from its average over the
+// history, plus an adjustment a reader may set.
+//
+// Cash runs through a waterfall every quarter: whatever is above a minimum balance, once the
+// business and the debt falling due are paid for, pays a dividend up to a target; what is left
+// repays the revolver, or the revolver covers a shortfall up to its limit; and a share of
+// anything left over buys back shares. Interest is on opening balances, so nothing depends on
+// itself within a quarter, and the balance sheet balances by construction.
+
+workbook : Workbook
+workbook = { sheets = [assumptions, historicals, analysis, forecast, data], column_width = 72 }
+
+assumptions : Sheet
+assumptions = { name = 'Assumptions', color = blue_tab }
+
+historicals : Sheet
+historicals = { name = 'Historicals', color = grey_tab }
+
+analysis : Sheet
+analysis = { name = 'Analysis', color = green_tab }
+
+forecast : Sheet
+forecast = { name = 'Forecast', color = orange_tab }
+
+data : Sheet
+data = { name = 'Data', color = grey_tab }
+
+// Styles. Every number typed in is blue, each section's title sits on a pale band, totals are
+// under a line and grand totals over a double one, and ratios are in italics.
+
+blue : Style Color
+blue = { red = 0, green = 0, blue = 255 }
+
+band : Style Color
+band = { red = 221, green = 235, blue = 247 }
+
+blue_tab : Style Color
+blue_tab = { red = 0, green = 112, blue = 192 }
+
+grey_tab : Style Color
+grey_tab = { red = 166, green = 166, blue = 166 }
+
+green_tab : Style Color
+green_tab = { red = 112, green = 173, blue = 71 }
+
+orange_tab : Style Color
+orange_tab = { red = 237, green = 125, blue = 49 }
+
+label : Style Cell
+label = { format = '@' }
+
+title : Style Cell
+title = label { font = { bold = True, size = 14 } }
+
+section : Style Cell
+section = label { font = { bold = True }, fill = band }
+
+item : Style Cell
+item = label { align = { horizontal = Left, indent = 1 } }
+
+part : Style Cell
+part = item { font = { italic = True } }
+
+step : Style Cell
+step = label { align = { horizontal = Left, indent = 2 } }
+
+header : Style Cell
+header =
+  { font = { bold = True }
+  , border = { bottom = { weight = Thin } }
+  , align = { horizontal = Right }
+  }
+
+money : Style Cell
+money = { format = '#,##0.0;-#,##0.0' }
+
+total : Style Cell
+total = money { font = { bold = True }, border = { top = { weight = Thin } } }
+
+grand_total : Style Cell
+grand_total = money
+  { font = { bold = True }
+  , border = { top = { weight = Thin }, bottom = { weight = Double } }
+  }
+
+percent : Style Cell
+percent = { format = '0.0%' }
+
+ratio : Style Cell
+ratio = percent { font = { italic = True } }
+
+multiple : Style Cell
+multiple = { format = '0.0"x"', font = { italic = True } }
+
+check : Style Cell
+check = { format = '0.000', font = { italic = True } }
+
+day_count : Style Cell
+day_count = { format = '0.0' }
+
+count : Style Cell
+count = { format = '0' }
+
+factor : Style Cell
+factor = { format = '0.000' }
+
+input_money : Style Cell
+input_money = money { font = { color = blue } }
+
+input_percent : Style Cell
+input_percent = percent { font = { color = blue } }
+
+input_number : Style Cell
+input_number = { format = '0.00', font = { color = blue } }
+
+input_count : Style Cell
+input_count = count { font = { color = blue } }
+
+input_table : Style Cell
+input_table = { font = { color = blue } }
+
+// Assumptions: single values first, then the two tables of the forecast's years and quarters.
+
+assumptions_title : Label style title width 280 at assumptions $B$2
+assumptions_title = "Assumptions, in millions"
+
+revenue_section : Label style section assumptions_title down 2
+revenue_section = "Revenue"
+
+gdp_beta_label : Label style item revenue_section down
+gdp_beta_label = "Growth per point of GDP growth"
+
+gdp_beta : Value Number style input_number gdp_beta_label right 2
+gdp_beta = 1.5
+
+price_beta_label : Label style item gdp_beta_label down
+price_beta_label = "Growth per point of price change"
+
+price_beta : Value Number style input_number price_beta_label right 2
+price_beta = -0.5
+
+operations_section : Label style section price_beta_label down 2
+operations_section = "Operations"
+
+cost_of_sales_share_label : Label style item operations_section down
+cost_of_sales_share_label = "Cost of sales, % of revenue"
+
+cost_of_sales_share : Value Number style input_percent cost_of_sales_share_label right 2
+cost_of_sales_share = 0.6
+
+operating_expenses_share_label : Label style item cost_of_sales_share_label down
+operating_expenses_share_label = "Operating expenses, % of revenue"
+
+operating_expenses_share : Value Number style input_percent operating_expenses_share_label right 2
+operating_expenses_share = 0.22
+
+depreciation_rate_label : Label style item operating_expenses_share_label down
+depreciation_rate_label = "Depreciation, % of opening PP&E"
+
+depreciation_rate : Value Number style input_percent depreciation_rate_label right 2
+depreciation_rate = 0.025
+
+capex_share_label : Label style item depreciation_rate_label down
+capex_share_label = "Capital expenditure, % of revenue"
+
+capex_share : Value Number style input_percent capex_share_label right 2
+capex_share = 0.055
+
+tax_rate_label : Label style item capex_share_label down
+tax_rate_label = "Tax, % of profit before tax"
+
+tax_rate : Value Number style input_percent tax_rate_label right 2
+tax_rate = 0.25
+
+receivable_days_label : Label style item tax_rate_label down
+receivable_days_label = "Receivables, days of revenue"
+
+receivable_days : Value Number style input_number receivable_days_label right 2
+receivable_days = 55
+
+inventory_days_label : Label style item receivable_days_label down
+inventory_days_label = "Inventory, days of cost of sales"
+
+inventory_days : Value Number style input_number inventory_days_label right 2
+inventory_days = 110
+
+payable_days_label : Label style item inventory_days_label down
+payable_days_label = "Payables, days of cost of sales"
+
+payable_days : Value Number style input_number payable_days_label right 2
+payable_days = 50
+
+financing_section : Label style section payable_days_label down 2
+financing_section = "Financing"
+
+bond_a_coupon_label : Label style item financing_section down
+bond_a_coupon_label = "Bond A coupon"
+
+bond_a_coupon : Value Number style input_percent bond_a_coupon_label right 2
+bond_a_coupon = 0.0475
+
+bond_a_maturity_label : Label style item bond_a_coupon_label down
+bond_a_maturity_label = "Bond A, quarters to maturity"
+
+bond_a_maturity : Value Number style input_count bond_a_maturity_label right 2
+bond_a_maturity = 8
+
+bond_b_coupon_label : Label style item bond_a_maturity_label down
+bond_b_coupon_label = "Bond B coupon"
+
+bond_b_coupon : Value Number style input_percent bond_b_coupon_label right 2
+bond_b_coupon = 0.06
+
+bond_b_maturity_label : Label style item bond_b_coupon_label down
+bond_b_maturity_label = "Bond B, quarters to maturity"
+
+bond_b_maturity : Value Number style input_count bond_b_maturity_label right 2
+bond_b_maturity = 18
+
+term_loan_margin_label : Label style item bond_b_maturity_label down
+term_loan_margin_label = "Term loan, margin over the base rate"
+
+term_loan_margin : Value Number style input_percent term_loan_margin_label right 2
+term_loan_margin = 0.025
+
+term_loan_repayment_label : Label style item term_loan_margin_label down
+term_loan_repayment_label = "Term loan, repayment a quarter"
+
+term_loan_repayment : Value Number style input_money term_loan_repayment_label right 2
+term_loan_repayment = 2.5
+
+revolver_margin_label : Label style item term_loan_repayment_label down
+revolver_margin_label = "Revolver, margin over the base rate"
+
+revolver_margin : Value Number style input_percent revolver_margin_label right 2
+revolver_margin = 0.0175
+
+revolver_limit_label : Label style item revolver_margin_label down
+revolver_limit_label = "Revolver limit"
+
+revolver_limit : Value Number style input_money revolver_limit_label right 2
+revolver_limit = 150
+
+minimum_cash_label : Label style item revolver_limit_label down
+minimum_cash_label = "Minimum cash"
+
+minimum_cash : Value Number style input_money minimum_cash_label right 2
+minimum_cash = 20
+
+dividend_label : Label style item minimum_cash_label down
+dividend_label = "Target dividend a quarter"
+
+dividend : Value Number style input_money dividend_label right 2
+dividend = 4
+
+buyback_share_label : Label style item dividend_label down
+buyback_share_label = "Buybacks, % of cash left over"
+
+buyback_share : Value Number style input_percent buyback_share_label right 2
+buyback_share = 0.5
+
+// The forecast's years, a row each, under labels that name the table's columns.
+years_section : Label style section buyback_share_label down 2
+years_section = "Forecast years"
+
+calendar_year_header : Label style header years_section down 1 right 2
+calendar_year_header = "Year"
+
+year_number_header : Label style header calendar_year_header right
+year_number_header = "Number"
+
+gdp_header : Label style header year_number_header right
+gdp_header = "GDP growth"
+
+price_header : Label style header gdp_header right
+price_header = "Prices"
+
+adjustment_header : Label style header price_header right
+adjustment_header = "Adjustment"
+
+years : Value style input_table calendar_year_header down
+years = csv "quarterly_years.csv"
+
+// The forecast's quarters, a row each.
+quarters_section : Label style section years_section down 8
+quarters_section = "Forecast quarters"
+
+quarter_header : Label style header quarters_section down 1 right 2
+quarter_header = "Quarter"
+
+quarter_year_header : Label style header quarter_header right
+quarter_year_header = "Year"
+
+season_header : Label style header quarter_year_header right
+season_header = "Season"
+
+days_header : Label style header season_header right
+days_header = "Days"
+
+base_rate_header : Label style header days_header right
+base_rate_header = "Base rate"
+
+quarters : Value style input_table quarter_header down
+quarters = csv "quarterly_quarters.csv"
+
+// Historicals: the reported quarters, a quarter to a column, with the subtotals a report shows.
+
+historicals_title : Label style title width 280 at historicals $B$2
+historicals_title = "Historicals, in millions"
+
+historicals_gap : Empty width 16 historicals_title right 1
+
+quarter_actual_label : Label style label historicals_title down 2
+quarter_actual_label = "Quarter"
+
+quarter_actual : Formula Text style header quarter_actual_label right 2
+quarter_actual = transpose (column "quarter" history)
+
+number_actual_label : Label style item quarter_actual_label down
+number_actual_label = "Quarter number"
+
+number_actual : Formula Number style count number_actual_label right 2
+number_actual = transpose (column "number" history)
+
+days_actual_label : Label style item number_actual_label down
+days_actual_label = "Days in the quarter"
+
+days_actual : Formula Number style count days_actual_label right 2
+days_actual = transpose (column "days" history)
+
+income_actual_section : Label style section days_actual_label down 2
+income_actual_section = "Income statement"
+
+revenue_actual_label : Label style item income_actual_section down
+revenue_actual_label = "Revenue"
+
+revenue_actual : Formula Number style money revenue_actual_label right 2
+revenue_actual = transpose (column "revenue" history)
+
+cost_of_sales_actual_label : Label style item revenue_actual_label down
+cost_of_sales_actual_label = "Cost of sales"
+
+cost_of_sales_actual : Formula Number style money cost_of_sales_actual_label right 2
+cost_of_sales_actual = transpose (column "cost_of_sales" history)
+
+gross_profit_actual_label : Label style item cost_of_sales_actual_label down
+gross_profit_actual_label = "Gross profit"
+
+gross_profit_actual : Formula Number style total gross_profit_actual_label right 2
+gross_profit_actual = revenue_actual - cost_of_sales_actual
+
+operating_expenses_actual_label : Label style item gross_profit_actual_label down
+operating_expenses_actual_label = "Operating expenses"
+
+operating_expenses_actual : Formula Number style money operating_expenses_actual_label right 2
+operating_expenses_actual = transpose (column "operating_expenses" history)
+
+ebitda_actual_label : Label style item operating_expenses_actual_label down
+ebitda_actual_label = "EBITDA"
+
+ebitda_actual : Formula Number style total ebitda_actual_label right 2
+ebitda_actual = gross_profit_actual - operating_expenses_actual
+
+depreciation_actual_label : Label style item ebitda_actual_label down
+depreciation_actual_label = "Depreciation"
+
+depreciation_actual : Formula Number style money depreciation_actual_label right 2
+depreciation_actual = transpose (column "depreciation" history)
+
+operating_profit_actual_label : Label style item depreciation_actual_label down
+operating_profit_actual_label = "Operating profit"
+
+operating_profit_actual : Formula Number style total operating_profit_actual_label right 2
+operating_profit_actual = ebitda_actual - depreciation_actual
+
+interest_actual_label : Label style item operating_profit_actual_label down
+interest_actual_label = "Interest"
+
+interest_actual : Formula Number style money interest_actual_label right 2
+interest_actual = transpose (column "interest" history)
+
+profit_before_tax_actual_label : Label style item interest_actual_label down
+profit_before_tax_actual_label = "Profit before tax"
+
+profit_before_tax_actual : Formula Number style total profit_before_tax_actual_label right 2
+profit_before_tax_actual = operating_profit_actual - interest_actual
+
+tax_actual_label : Label style item profit_before_tax_actual_label down
+tax_actual_label = "Tax"
+
+tax_actual : Formula Number style money tax_actual_label right 2
+tax_actual = transpose (column "tax" history)
+
+net_income_actual_label : Label style item tax_actual_label down
+net_income_actual_label = "Net income"
+
+net_income_actual : Formula Number style grand_total net_income_actual_label right 2
+net_income_actual = profit_before_tax_actual - tax_actual
+
+balance_actual_section : Label style section net_income_actual_label down 2
+balance_actual_section = "Balance sheet"
+
+cash_actual_label : Label style item balance_actual_section down
+cash_actual_label = "Cash"
+
+cash_actual : Formula Number style money cash_actual_label right 2
+cash_actual = transpose (column "cash" history)
+
+receivables_actual_label : Label style item cash_actual_label down
+receivables_actual_label = "Receivables"
+
+receivables_actual : Formula Number style money receivables_actual_label right 2
+receivables_actual = transpose (column "receivables" history)
+
+inventory_actual_label : Label style item receivables_actual_label down
+inventory_actual_label = "Inventory"
+
+inventory_actual : Formula Number style money inventory_actual_label right 2
+inventory_actual = transpose (column "inventory" history)
+
+ppe_actual_label : Label style item inventory_actual_label down
+ppe_actual_label = "PP&E"
+
+ppe_actual : Formula Number style money ppe_actual_label right 2
+ppe_actual = transpose (column "ppe" history)
+
+total_assets_actual_label : Label style item ppe_actual_label down
+total_assets_actual_label = "Total assets"
+
+total_assets_actual : Formula Number style grand_total total_assets_actual_label right 2
+total_assets_actual = cash_actual + receivables_actual + inventory_actual + ppe_actual
+
+payables_actual_label : Label style item total_assets_actual_label down 2
+payables_actual_label = "Payables"
+
+payables_actual : Formula Number style money payables_actual_label right 2
+payables_actual = transpose (column "payables" history)
+
+revolver_actual_label : Label style item payables_actual_label down
+revolver_actual_label = "Revolver"
+
+revolver_actual : Formula Number style money revolver_actual_label right 2
+revolver_actual = transpose (column "revolver" history)
+
+bond_a_actual_label : Label style item revolver_actual_label down
+bond_a_actual_label = "Bond A"
+
+bond_a_actual : Formula Number style money bond_a_actual_label right 2
+bond_a_actual = transpose (column "bond_a" history)
+
+bond_b_actual_label : Label style item bond_a_actual_label down
+bond_b_actual_label = "Bond B"
+
+bond_b_actual : Formula Number style money bond_b_actual_label right 2
+bond_b_actual = transpose (column "bond_b" history)
+
+term_loan_actual_label : Label style item bond_b_actual_label down
+term_loan_actual_label = "Term loan"
+
+term_loan_actual : Formula Number style money term_loan_actual_label right 2
+term_loan_actual = transpose (column "term_loan" history)
+
+equity_actual_label : Label style item term_loan_actual_label down
+equity_actual_label = "Equity"
+
+equity_actual : Formula Number style money equity_actual_label right 2
+equity_actual = transpose (column "equity" history)
+
+total_liabilities_actual_label : Label style item equity_actual_label down
+total_liabilities_actual_label = "Total liabilities and equity"
+
+total_liabilities_actual : Formula Number style grand_total total_liabilities_actual_label right 2
+total_liabilities_actual = (payables_actual + revolver_actual + bond_a_actual + bond_b_actual
+  + term_loan_actual + equity_actual)
+
+balance_check_actual_label : Label style part total_liabilities_actual_label down
+balance_check_actual_label = "Balance check"
+
+balance_check_actual : Formula Number style check balance_check_actual_label right 2
+balance_check_actual = total_assets_actual - total_liabilities_actual
+
+cash_flow_actual_section : Label style section balance_check_actual_label down 2
+cash_flow_actual_section = "Cash flow"
+
+capex_actual_label : Label style item cash_flow_actual_section down
+capex_actual_label = "Capital expenditure"
+
+capex_actual : Formula Number style money capex_actual_label right 2
+capex_actual = transpose (column "capex" history)
+
+dividends_actual_label : Label style item capex_actual_label down
+dividends_actual_label = "Dividends"
+
+dividends_actual : Formula Number style money dividends_actual_label right 2
+dividends_actual = transpose (column "dividends" history)
+
+buybacks_actual_label : Label style item dividends_actual_label down
+buybacks_actual_label = "Share buybacks"
+
+buybacks_actual : Formula Number style money buybacks_actual_label right 2
+buybacks_actual = transpose (column "buybacks" history)
+
+economy_actual_section : Label style section buybacks_actual_label down 2
+economy_actual_section = "Economy"
+
+gdp_growth_actual_label : Label style item economy_actual_section down
+gdp_growth_actual_label = "GDP growth, year on year"
+
+gdp_growth_actual : Formula Number style percent gdp_growth_actual_label right 2
+gdp_growth_actual = transpose (column "gdp_growth" history)
+
+price_change_actual_label : Label style item gdp_growth_actual_label down
+price_change_actual_label = "Own price change, year on year"
+
+price_change_actual : Formula Number style percent price_change_actual_label right 2
+price_change_actual = transpose (column "price_change" history)
+
+// Analysis: the history spread out, and where the forecast starts.
+
+analysis_title : Label style title width 280 at analysis $B$2
+analysis_title = "Analysis, in millions"
+
+analysis_gap : Empty width 16 analysis_title right 1
+
+quarter_analysis_label : Label style label analysis_title down 2
+quarter_analysis_label = "Quarter"
+
+quarter_analysis : Formula Text style header quarter_analysis_label right 2
+quarter_analysis = quarter_actual
+
+// A quarter's growth needs the same quarter a year earlier, so the rows of growth start at the
+// fifth quarter: `lag 4 x` is x four quarters earlier, and `later_years x` is x from the fifth
+// quarter on, so that the two line up.
+later_years : Lambda Number -> Number
+later_years x = tail across (tail across (tail across (tail across x)))
+
+growth_analysis_section : Label style section quarter_analysis_label down 2
+growth_analysis_section = "Revenue growth"
+
+revenue_growth_actual_label : Label style item growth_analysis_section down
+revenue_growth_actual_label = "Growth on the same quarter a year earlier"
+
+revenue_growth_actual : Formula Number style percent revenue_growth_actual_label right 6
+revenue_growth_actual = later_years revenue_actual / lag 4 revenue_actual - 1
+
+gdp_effect_actual_label : Label style item revenue_growth_actual_label down
+gdp_effect_actual_label = "GDP effect"
+
+gdp_effect_actual : Formula Number style percent gdp_effect_actual_label right 6
+gdp_effect_actual = gdp_beta * (later_years gdp_growth_actual - gdp_average)
+
+price_effect_actual_label : Label style item gdp_effect_actual_label down
+price_effect_actual_label = "Price effect"
+
+price_effect_actual : Formula Number style percent price_effect_actual_label right 6
+price_effect_actual = price_beta * (later_years price_change_actual - price_average)
+
+surprise_actual_label : Label style item price_effect_actual_label down
+surprise_actual_label = "Growth the model leaves unexplained"
+
+surprise_actual : Formula Number style ratio surprise_actual_label right 6
+surprise_actual = revenue_growth_actual - cagr - gdp_effect_actual - price_effect_actual
+
+// The compound annual growth runs from the first reported year's revenue to the last's.
+first_year_revenue_label : Label style item surprise_actual_label down 2
+first_year_revenue_label = "Revenue in the first reported year"
+
+first_year_revenue : Formula Number style money first_year_revenue_label right 2
+first_year_revenue = sum (lookup [1, 2, 3, 4] number_actual revenue_actual)
+
+last_quarter_label : Label style item first_year_revenue_label down
+last_quarter_label = "Last reported quarter"
+
+last_quarter : Formula Number style count last_quarter_label right 2
+last_quarter = maximum number_actual
+
+last_year_revenue_label : Label style item last_quarter_label down
+last_year_revenue_label = "Revenue in the last reported year"
+
+last_year_revenue : Formula Number style money last_year_revenue_label right 2
+last_year_revenue = sum (lookup (last_quarter - [3, 2, 1, 0]) number_actual revenue_actual)
+
+cagr_label : Label style item last_year_revenue_label down
+cagr_label = "Compound annual growth"
+
+cagr : Formula Number style percent cagr_label right 2
+cagr = (last_year_revenue / first_year_revenue) ^ (4 / (last_quarter - 4)) - 1
+
+gdp_average_label : Label style item cagr_label down
+gdp_average_label = "GDP growth, average"
+
+gdp_average : Formula Number style percent gdp_average_label right 2
+gdp_average = average (later_years gdp_growth_actual)
+
+price_average_label : Label style item gdp_average_label down
+price_average_label = "Own price change, average"
+
+price_average : Formula Number style percent price_average_label right 2
+price_average = average (later_years price_change_actual)
+
+margins_section : Label style section price_average_label down 2
+margins_section = "Margins and working capital"
+
+gross_margin_actual_label : Label style item margins_section down
+gross_margin_actual_label = "Gross margin"
+
+gross_margin_actual : Formula Number style percent gross_margin_actual_label right 2
+gross_margin_actual = gross_profit_actual / revenue_actual
+
+ebitda_margin_actual_label : Label style item gross_margin_actual_label down
+ebitda_margin_actual_label = "EBITDA margin"
+
+ebitda_margin_actual : Formula Number style percent ebitda_margin_actual_label right 2
+ebitda_margin_actual = ebitda_actual / revenue_actual
+
+capex_share_actual_label : Label style item ebitda_margin_actual_label down
+capex_share_actual_label = "Capital expenditure, % of revenue"
+
+capex_share_actual : Formula Number style percent capex_share_actual_label right 2
+capex_share_actual = capex_actual / revenue_actual
+
+tax_rate_actual_label : Label style item capex_share_actual_label down
+tax_rate_actual_label = "Tax, % of profit before tax"
+
+tax_rate_actual : Formula Number style percent tax_rate_actual_label right 2
+tax_rate_actual = tax_actual / profit_before_tax_actual
+
+receivable_days_actual_label : Label style item tax_rate_actual_label down
+receivable_days_actual_label = "Receivable days"
+
+receivable_days_actual : Formula Number style day_count receivable_days_actual_label right 2
+receivable_days_actual = receivables_actual / revenue_actual * days_actual
+
+inventory_days_actual_label : Label style item receivable_days_actual_label down
+inventory_days_actual_label = "Inventory days"
+
+inventory_days_actual : Formula Number style day_count inventory_days_actual_label right 2
+inventory_days_actual = inventory_actual / cost_of_sales_actual * days_actual
+
+payable_days_actual_label : Label style item inventory_days_actual_label down
+payable_days_actual_label = "Payable days"
+
+payable_days_actual : Formula Number style day_count payable_days_actual_label right 2
+payable_days_actual = payables_actual / cost_of_sales_actual * days_actual
+
+// Where the forecast starts: each balance at the last reported quarter.
+at_end : Lambda Number -> Number
+at_end x = lookup last_quarter number_actual x
+
+start_section : Label style section payable_days_actual_label down 2
+start_section = "Where the forecast starts"
+
+start_cash_label : Label style item start_section down
+start_cash_label = "Cash"
+
+start_cash : Formula Number style money start_cash_label right 2
+start_cash = at_end cash_actual
+
+start_revolver_label : Label style item start_cash_label down
+start_revolver_label = "Revolver"
+
+start_revolver : Formula Number style money start_revolver_label right 2
+start_revolver = at_end revolver_actual
+
+start_net_cash_label : Label style item start_revolver_label down
+start_net_cash_label = "Cash less the revolver"
+
+start_net_cash : Formula Number style total start_net_cash_label right 2
+start_net_cash = start_cash - start_revolver
+
+start_working_capital_label : Label style item start_net_cash_label down
+start_working_capital_label = "Working capital"
+
+start_working_capital : Formula Number style money start_working_capital_label right 2
+start_working_capital = at_end (receivables_actual + inventory_actual - payables_actual)
+
+start_ppe_label : Label style item start_working_capital_label down
+start_ppe_label = "PP&E"
+
+start_ppe : Formula Number style money start_ppe_label right 2
+start_ppe = at_end ppe_actual
+
+start_bond_a_label : Label style item start_ppe_label down
+start_bond_a_label = "Bond A"
+
+start_bond_a : Formula Number style money start_bond_a_label right 2
+start_bond_a = at_end bond_a_actual
+
+start_bond_b_label : Label style item start_bond_a_label down
+start_bond_b_label = "Bond B"
+
+start_bond_b : Formula Number style money start_bond_b_label right 2
+start_bond_b = at_end bond_b_actual
+
+start_term_loan_label : Label style item start_bond_b_label down
+start_term_loan_label = "Term loan"
+
+start_term_loan : Formula Number style money start_term_loan_label right 2
+start_term_loan = at_end term_loan_actual
+
+start_equity_label : Label style item start_term_loan_label down
+start_equity_label = "Equity"
+
+start_equity : Formula Number style money start_equity_label right 2
+start_equity = at_end equity_actual
+
+// Twelve-month EBITDA in the first forecast quarters needs the last three reported quarters.
+last_ebitda_label : Label style item start_equity_label down
+last_ebitda_label = "EBITDA, last reported quarter"
+
+last_ebitda : Formula Number style money last_ebitda_label right 2
+last_ebitda = at_end ebitda_actual
+
+ebitda_before_last_label : Label style item last_ebitda_label down
+ebitda_before_last_label = "EBITDA, a quarter before"
+
+ebitda_before_last : Formula Number style money ebitda_before_last_label right 2
+ebitda_before_last = lookup (last_quarter - 1) number_actual ebitda_actual
+
+ebitda_two_before_last_label : Label style item ebitda_before_last_label down
+ebitda_two_before_last_label = "EBITDA, two quarters before"
+
+ebitda_two_before_last : Formula Number style money ebitda_two_before_last_label right 2
+ebitda_two_before_last = lookup (last_quarter - 2) number_actual ebitda_actual
+
+// Forecast: a quarter to a column, from the quarters table.
+
+forecast_title : Label style title width 280 at forecast $B$2
+forecast_title = "Forecast, in millions"
+
+forecast_gap : Empty width 16 forecast_title right 1
+
+quarter_label : Label style label forecast_title down 2
+quarter_label = "Quarter"
+
+quarter : Formula Text style header quarter_label right 2
+quarter = transpose (column "quarter" quarters)
+
+year_label : Label style item quarter_label down
+year_label = "Year of the forecast"
+
+year : Formula Number style count year_label right 2
+year = transpose (column "year" quarters)
+
+season_label : Label style item year_label down
+season_label = "Quarter of the year"
+
+season : Formula Number style count season_label right 2
+season = transpose (column "season" quarters)
+
+days_label : Label style item season_label down
+days_label = "Days in the quarter"
+
+days : Formula Number style count days_label right 2
+days = transpose (column "days" quarters)
+
+base_rate_label : Label style item days_label down
+base_rate_label = "Base rate"
+
+base_rate : Formula Number style percent base_rate_label right 2
+base_rate = transpose (column "base_rate" quarters)
+
+// Revenue grows by the year: each year's growth from the history's compound growth and the
+// economy, and the growth since the last reported year carried from one year to the next.
+growth_section : Label style section base_rate_label down 2
+growth_section = "Revenue growth, by year"
+
+calendar_year_label : Label style item growth_section down
+calendar_year_label = "Year"
+
+calendar_year : Formula Number style header calendar_year_label right 2
+calendar_year = transpose (column "calendar_year" years)
+
+year_number_label : Label style item calendar_year_label down
+year_number_label = "Year of the forecast"
+
+year_number : Formula Number style count year_number_label right 2
+year_number = transpose (column "year" years)
+
+gdp_effect_label : Label style item year_number_label down
+gdp_effect_label = "GDP effect"
+
+gdp_effect : Formula Number style percent gdp_effect_label right 2
+gdp_effect = gdp_beta * (transpose (column "gdp_growth" years) - gdp_average)
+
+price_effect_label : Label style item gdp_effect_label down
+price_effect_label = "Price effect"
+
+price_effect : Formula Number style percent price_effect_label right 2
+price_effect = price_beta * (transpose (column "price_change" years) - price_average)
+
+growth_label : Label style item price_effect_label down
+growth_label = "Growth on a year earlier"
+
+growth : Formula Number style percent growth_label right 2
+growth = cagr + gdp_effect + price_effect + transpose (column "growth_adjustment" years)
+
+growth_index_label : Label style item growth_label down
+growth_index_label = "Revenue, times the last reported year's"
+
+growth_index : Formula Number style factor growth_index_label right 2
+growth_index = lag 1 growth_index seed 1 * (1 + growth)
+
+income_section : Label style section growth_index_label down 2
+income_section = "Income statement"
+
+// Each quarter is the same quarter of the last reported year, grown to the quarter's year.
+same_quarter_label : Label style part income_section down
+same_quarter_label = "Same quarter of the last reported year"
+
+same_quarter : Formula Number style money same_quarter_label right 2
+same_quarter = lookup (last_quarter - 4 + season) number_actual revenue_actual
+
+revenue_label : Label style item same_quarter_label down
+revenue_label = "Revenue"
+
+revenue : Formula Number style money revenue_label right 2
+revenue = same_quarter * lookup year year_number growth_index
+
+cost_of_sales_label : Label style item revenue_label down
+cost_of_sales_label = "Cost of sales"
+
+cost_of_sales : Formula Number style money cost_of_sales_label right 2
+cost_of_sales = revenue * cost_of_sales_share
+
+gross_profit_label : Label style item cost_of_sales_label down
+gross_profit_label = "Gross profit"
+
+gross_profit : Formula Number style total gross_profit_label right 2
+gross_profit = revenue - cost_of_sales
+
+gross_margin_label : Label style step gross_profit_label down
+gross_margin_label = "Gross margin"
+
+gross_margin : Formula Number style ratio gross_margin_label right 2
+gross_margin = gross_profit / revenue
+
+operating_expenses_label : Label style item gross_margin_label down
+operating_expenses_label = "Operating expenses"
+
+operating_expenses : Formula Number style money operating_expenses_label right 2
+operating_expenses = revenue * operating_expenses_share
+
+ebitda_label : Label style item operating_expenses_label down
+ebitda_label = "EBITDA"
+
+ebitda : Formula Number style total ebitda_label right 2
+ebitda = gross_profit - operating_expenses
+
+ebitda_margin_label : Label style step ebitda_label down
+ebitda_margin_label = "EBITDA margin"
+
+ebitda_margin : Formula Number style ratio ebitda_margin_label right 2
+ebitda_margin = ebitda / revenue
+
+depreciation_label : Label style item ebitda_margin_label down
+depreciation_label = "Depreciation"
+
+depreciation : Formula Number style money depreciation_label right 2
+depreciation = opening_ppe * depreciation_rate
+
+operating_profit_label : Label style item depreciation_label down
+operating_profit_label = "Operating profit"
+
+operating_profit : Formula Number style total operating_profit_label right 2
+operating_profit = ebitda - depreciation
+
+interest_label : Label style item operating_profit_label down
+interest_label = "Interest"
+
+interest : Formula Number style money interest_label right 2
+interest = fixed_interest + revolver_interest
+
+profit_before_tax_label : Label style item interest_label down
+profit_before_tax_label = "Profit before tax"
+
+profit_before_tax : Formula Number style total profit_before_tax_label right 2
+profit_before_tax = operating_profit - interest
+
+tax_label : Label style item profit_before_tax_label down
+tax_label = "Tax"
+
+// No credit for a loss.
+tax : Formula Number style money tax_label right 2
+tax = max profit_before_tax 0 * tax_rate
+
+net_income_label : Label style item tax_label down
+net_income_label = "Net income"
+
+net_income : Formula Number style grand_total net_income_label right 2
+net_income = profit_before_tax - tax
+
+net_margin_label : Label style step net_income_label down
+net_margin_label = "Net margin"
+
+net_margin : Formula Number style ratio net_margin_label right 2
+net_margin = net_income / revenue
+
+balance_section : Label style section net_margin_label down 2
+balance_section = "Balance sheet"
+
+cash_label : Label style item balance_section down
+cash_label = "Cash"
+
+cash : Formula Number style money cash_label right 2
+cash = max net_cash (min minimum_cash (net_cash + revolver_limit))
+
+receivables_label : Label style item cash_label down
+receivables_label = "Receivables"
+
+receivables : Formula Number style money receivables_label right 2
+receivables = revenue / days * receivable_days
+
+inventory_label : Label style item receivables_label down
+inventory_label = "Inventory"
+
+inventory : Formula Number style money inventory_label right 2
+inventory = cost_of_sales / days * inventory_days
+
+ppe_label : Label style item inventory_label down
+ppe_label = "PP&E"
+
+ppe : Formula Number style money ppe_label right 2
+ppe = opening_ppe + capex - depreciation
+
+total_assets_label : Label style item ppe_label down
+total_assets_label = "Total assets"
+
+total_assets : Formula Number style grand_total total_assets_label right 2
+total_assets = cash + receivables + inventory + ppe
+
+payables_label : Label style item total_assets_label down 2
+payables_label = "Payables"
+
+payables : Formula Number style money payables_label right 2
+payables = cost_of_sales / days * payable_days
+
+revolver_label : Label style item payables_label down
+revolver_label = "Revolver"
+
+revolver : Formula Number style money revolver_label right 2
+revolver = cash - net_cash
+
+bond_a_label : Label style item revolver_label down
+bond_a_label = "Bond A"
+
+bond_a : Formula Number style money bond_a_label right 2
+bond_a = outstanding start_bond_a bond_a_maturity
+
+bond_b_label : Label style item bond_a_label down
+bond_b_label = "Bond B"
+
+bond_b : Formula Number style money bond_b_label right 2
+bond_b = outstanding start_bond_b bond_b_maturity
+
+term_loan_label : Label style item bond_b_label down
+term_loan_label = "Term loan"
+
+term_loan : Formula Number style money term_loan_label right 2
+term_loan = max (start_term_loan - term_loan_repayment * quarter_number) 0
+
+equity_label : Label style item term_loan_label down
+equity_label = "Equity"
+
+equity : Formula Number style money equity_label right 2
+equity = opening_equity + net_income - dividends - buybacks
+
+total_liabilities_label : Label style item equity_label down
+total_liabilities_label = "Total liabilities and equity"
+
+total_liabilities : Formula Number style grand_total total_liabilities_label right 2
+total_liabilities = payables + revolver + bond_a + bond_b + term_loan + equity
+
+balance_check_label : Label style part total_liabilities_label down
+balance_check_label = "Balance check"
+
+balance_check : Formula Number style check balance_check_label right 2
+balance_check = total_assets - total_liabilities
+
+cash_flow_section : Label style section balance_check_label down 2
+cash_flow_section = "Cash flow statement"
+
+flow_net_income_label : Label style item cash_flow_section down
+flow_net_income_label = "Net income"
+
+flow_net_income : Formula Number style money flow_net_income_label right 2
+flow_net_income = net_income
+
+flow_depreciation_label : Label style item flow_net_income_label down
+flow_depreciation_label = "Depreciation"
+
+flow_depreciation : Formula Number style money flow_depreciation_label right 2
+flow_depreciation = depreciation
+
+flow_working_capital_label : Label style item flow_depreciation_label down
+flow_working_capital_label = "Change in working capital"
+
+flow_working_capital : Formula Number style money flow_working_capital_label right 2
+flow_working_capital = -working_capital_increase
+
+cash_from_operations_label : Label style item flow_working_capital_label down
+cash_from_operations_label = "Cash from operations"
+
+cash_from_operations : Formula Number style total cash_from_operations_label right 2
+cash_from_operations = flow_net_income + flow_depreciation + flow_working_capital
+
+flow_capex_label : Label style item cash_from_operations_label down
+flow_capex_label = "Capital expenditure"
+
+flow_capex : Formula Number style money flow_capex_label right 2
+flow_capex = -capex
+
+flow_debt_label : Label style item flow_capex_label down
+flow_debt_label = "Debt repaid"
+
+flow_debt : Formula Number style money flow_debt_label right 2
+flow_debt = -scheduled_repayment
+
+flow_revolver_label : Label style item flow_debt_label down
+flow_revolver_label = "Revolver drawn, or repaid"
+
+flow_revolver : Formula Number style money flow_revolver_label right 2
+flow_revolver = revolver_drawn
+
+flow_dividends_label : Label style item flow_revolver_label down
+flow_dividends_label = "Dividends"
+
+flow_dividends : Formula Number style money flow_dividends_label right 2
+flow_dividends = -dividends
+
+flow_buybacks_label : Label style item flow_dividends_label down
+flow_buybacks_label = "Share buybacks"
+
+flow_buybacks : Formula Number style money flow_buybacks_label right 2
+flow_buybacks = -buybacks
+
+cash_from_financing_label : Label style item flow_buybacks_label down
+cash_from_financing_label = "Cash from financing"
+
+cash_from_financing : Formula Number style total cash_from_financing_label right 2
+cash_from_financing = flow_debt + flow_revolver + flow_dividends + flow_buybacks
+
+net_change_label : Label style item cash_from_financing_label down
+net_change_label = "Net change in cash"
+
+net_change : Formula Number style total net_change_label right 2
+net_change = cash_from_operations + flow_capex + cash_from_financing
+
+flow_opening_cash_label : Label style item net_change_label down
+flow_opening_cash_label = "Opening cash"
+
+flow_opening_cash : Formula Number style money flow_opening_cash_label right 2
+flow_opening_cash = opening_cash
+
+flow_closing_cash_label : Label style item flow_opening_cash_label down
+flow_closing_cash_label = "Closing cash"
+
+flow_closing_cash : Formula Number style grand_total flow_closing_cash_label right 2
+flow_closing_cash = flow_opening_cash + net_change
+
+// The schedules behind the statements.
+schedules_section : Label style section flow_closing_cash_label down 2
+schedules_section = "Schedules"
+
+ppe_part : Label style part schedules_section down
+ppe_part = "PP&E"
+
+opening_ppe_label : Label style step ppe_part down
+opening_ppe_label = "Opening"
+
+opening_ppe : Formula Number style money opening_ppe_label right 2
+opening_ppe = lag 1 ppe seed start_ppe
+
+capex_label : Label style step opening_ppe_label down
+capex_label = "Capital expenditure"
+
+capex : Formula Number style money capex_label right 2
+capex = revenue * capex_share
+
+working_capital_part : Label style part capex_label down
+working_capital_part = "Working capital"
+
+working_capital_label : Label style step working_capital_part down
+working_capital_label = "Receivables and inventory, less payables"
+
+working_capital : Formula Number style money working_capital_label right 2
+working_capital = receivables + inventory - payables
+
+working_capital_increase_label : Label style step working_capital_label down
+working_capital_increase_label = "Increase"
+
+working_capital_increase : Formula Number style money working_capital_increase_label right 2
+working_capital_increase = working_capital - lag 1 working_capital seed start_working_capital
+
+// A bond is repaid whole at maturity: all of it is outstanding before then, and none after.
+outstanding : Lambda Number -> Number -> Number
+outstanding face maturity = face * min 1 (max (maturity - quarter_number) 0)
+
+debt_part : Label style part working_capital_increase_label down
+debt_part = "Debt"
+
+quarter_number_label : Label style step debt_part down
+quarter_number_label = "Quarters into the forecast"
+
+quarter_number : Formula Number style count quarter_number_label right 2
+quarter_number = (year - 1) * 4 + season
+
+opening_bond_a_label : Label style step quarter_number_label down
+opening_bond_a_label = "Bond A, opening"
+
+opening_bond_a : Formula Number style money opening_bond_a_label right 2
+opening_bond_a = lag 1 bond_a seed start_bond_a
+
+opening_bond_b_label : Label style step opening_bond_a_label down
+opening_bond_b_label = "Bond B, opening"
+
+opening_bond_b : Formula Number style money opening_bond_b_label right 2
+opening_bond_b = lag 1 bond_b seed start_bond_b
+
+opening_term_loan_label : Label style step opening_bond_b_label down
+opening_term_loan_label = "Term loan, opening"
+
+opening_term_loan : Formula Number style money opening_term_loan_label right 2
+opening_term_loan = lag 1 term_loan seed start_term_loan
+
+scheduled_repayment_label : Label style step opening_term_loan_label down
+scheduled_repayment_label = "Debt falling due"
+
+scheduled_repayment : Formula Number style money scheduled_repayment_label right 2
+scheduled_repayment = (opening_bond_a - bond_a + opening_bond_b - bond_b + opening_term_loan
+  - term_loan)
+
+// Interest on everything but the revolver is known before the waterfall runs.
+fixed_interest_label : Label style step scheduled_repayment_label down
+fixed_interest_label = "Interest on the bonds and the term loan"
+
+fixed_interest : Formula Number style money fixed_interest_label right 2
+fixed_interest = (opening_bond_a * bond_a_coupon + opening_bond_b * bond_b_coupon
+  + opening_term_loan * (base_rate + term_loan_margin)) / 4
+
+revolver_interest_label : Label style step fixed_interest_label down
+revolver_interest_label = "Interest on the revolver"
+
+revolver_interest : Formula Number style money revolver_interest_label right 2
+revolver_interest = opening_revolver * (base_rate + revolver_margin) / 4
+
+// The waterfall. Cash sits at the minimum while the revolver is drawn, and the revolver is nil
+// while cash is above the minimum, so one value, cash less the revolver, says where both are.
+// That is the value carried from one quarter to the next: it moves by the cash the business
+// makes, less the debt falling due and what goes to shareholders.
+waterfall_part : Label style part revolver_interest_label down
+waterfall_part = "Cash waterfall"
+
+opening_net_cash_label : Label style step waterfall_part down
+opening_net_cash_label = "Opening cash less the revolver"
+
+opening_net_cash : Formula Number style money opening_net_cash_label right 2
+opening_net_cash = lag 1 net_cash seed start_net_cash
+
+opening_cash_label : Label style step opening_net_cash_label down
+opening_cash_label = "Opening cash"
+
+opening_cash : Formula Number style money opening_cash_label right 2
+opening_cash = max opening_net_cash (min minimum_cash (opening_net_cash + revolver_limit))
+
+opening_revolver_label : Label style step opening_cash_label down
+opening_revolver_label = "Opening revolver"
+
+opening_revolver : Formula Number style money opening_revolver_label right 2
+opening_revolver = opening_cash - opening_net_cash
+
+available_label : Label style step opening_revolver_label down
+available_label = "Available above the minimum"
+
+available : Formula Number style money available_label right 2
+available = opening_cash - minimum_cash + cash_from_operations - capex - scheduled_repayment
+
+dividends_label : Label style step available_label down
+dividends_label = "Dividends"
+
+dividends : Formula Number style money dividends_label right 2
+dividends = min dividend (max available 0)
+
+// A share of what is left, once the dividend is paid and the revolver repaid in full.
+buybacks_label : Label style step dividends_label down
+buybacks_label = "Share buybacks"
+
+buybacks : Formula Number style money buybacks_label right 2
+buybacks = max (available - dividends - opening_revolver) 0 * buyback_share
+
+net_cash_label : Label style step buybacks_label down
+net_cash_label = "Closing cash less the revolver"
+
+net_cash : Formula Number style total net_cash_label right 2
+net_cash = (opening_net_cash + cash_from_operations - capex - scheduled_repayment - dividends
+  - buybacks)
+
+// The revolver covers a shortfall up to its limit, and is repaid from a surplus.
+revolver_drawn_label : Label style step net_cash_label down
+revolver_drawn_label = "Revolver drawn, or repaid"
+
+revolver_drawn : Formula Number style money revolver_drawn_label right 2
+revolver_drawn = revolver - opening_revolver
+
+equity_part : Label style part revolver_drawn_label down
+equity_part = "Equity"
+
+opening_equity_label : Label style step equity_part down
+opening_equity_label = "Opening"
+
+opening_equity : Formula Number style money opening_equity_label right 2
+opening_equity = lag 1 equity seed start_equity
+
+// Ratios that are not part of the statements.
+ratios_section : Label style section opening_equity_label down 2
+ratios_section = "Ratios"
+
+debt_label : Label style item ratios_section down
+debt_label = "Debt"
+
+debt : Formula Number style money debt_label right 2
+debt = revolver + bond_a + bond_b + term_loan
+
+net_debt_label : Label style item debt_label down
+net_debt_label = "Net debt"
+
+net_debt : Formula Number style money net_debt_label right 2
+net_debt = debt - cash
+
+// `before first x` is x a quarter earlier, starting from `first`.
+before : Lambda Number -> Number -> Number
+before first x = lag across 1 x seed first
+
+ebitda_one_label : Label style item net_debt_label down
+ebitda_one_label = "EBITDA, a quarter earlier"
+
+ebitda_one : Formula Number style money ebitda_one_label right 2
+ebitda_one = before last_ebitda ebitda
+
+ebitda_two_label : Label style item ebitda_one_label down
+ebitda_two_label = "EBITDA, two quarters earlier"
+
+ebitda_two : Formula Number style money ebitda_two_label right 2
+ebitda_two = before ebitda_before_last ebitda_one
+
+ebitda_three_label : Label style item ebitda_two_label down
+ebitda_three_label = "EBITDA, three quarters earlier"
+
+ebitda_three : Formula Number style money ebitda_three_label right 2
+ebitda_three = before ebitda_two_before_last ebitda_two
+
+ebitda_twelve_months_label : Label style item ebitda_three_label down
+ebitda_twelve_months_label = "EBITDA, last twelve months"
+
+ebitda_twelve_months : Formula Number style total ebitda_twelve_months_label right 2
+ebitda_twelve_months = ebitda + ebitda_one + ebitda_two + ebitda_three
+
+leverage_label : Label style item ebitda_twelve_months_label down
+leverage_label = "Debt / EBITDA"
+
+leverage : Formula Number style multiple leverage_label right 2
+leverage = debt / ebitda_twelve_months
+
+net_leverage_label : Label style item leverage_label down
+net_leverage_label = "Net debt / EBITDA"
+
+net_leverage : Formula Number style multiple net_leverage_label right 2
+net_leverage = net_debt / ebitda_twelve_months
+
+interest_cover_label : Label style item net_leverage_label down
+interest_cover_label = "EBITDA / interest, quarter"
+
+interest_cover : Formula Number style multiple interest_cover_label right 2
+interest_cover = ebitda / interest
+
+liquidity_label : Label style item interest_cover_label down
+liquidity_label = "Cash and undrawn revolver"
+
+liquidity : Formula Number style money liquidity_label right 2
+liquidity = cash + revolver_limit - revolver
+
+// Data: the reported quarters as they came, a quarter to a row, under labels that name the
+// table's columns.
+
+data_title : Label style title at data $B$2
+data_title = "Reported quarters, in millions"
+
+quarter_column : Label style header data_title down 2
+quarter_column = "Quarter"
+
+number_column : Label style header quarter_column right
+number_column = "Number"
+
+season_column : Label style header number_column right
+season_column = "Season"
+
+days_column : Label style header season_column right
+days_column = "Days"
+
+gdp_column : Label style header days_column right
+gdp_column = "GDP growth"
+
+prices_column : Label style header gdp_column right
+prices_column = "Prices"
+
+revenue_column : Label style header prices_column right
+revenue_column = "Revenue"
+
+cost_of_sales_column : Label style header revenue_column right
+cost_of_sales_column = "COGS"
+
+operating_expenses_column : Label style header cost_of_sales_column right
+operating_expenses_column = "Opex"
+
+depreciation_column : Label style header operating_expenses_column right
+depreciation_column = "D&A"
+
+interest_column : Label style header depreciation_column right
+interest_column = "Interest"
+
+tax_column : Label style header interest_column right
+tax_column = "Tax"
+
+cash_column : Label style header tax_column right
+cash_column = "Cash"
+
+receivables_column : Label style header cash_column right
+receivables_column = "Receivables"
+
+inventory_column : Label style header receivables_column right
+inventory_column = "Inventory"
+
+ppe_column : Label style header inventory_column right
+ppe_column = "PP&E"
+
+payables_column : Label style header ppe_column right
+payables_column = "Payables"
+
+revolver_column : Label style header payables_column right
+revolver_column = "Revolver"
+
+bond_a_column : Label style header revolver_column right
+bond_a_column = "Bond A"
+
+bond_b_column : Label style header bond_a_column right
+bond_b_column = "Bond B"
+
+term_loan_column : Label style header bond_b_column right
+term_loan_column = "Term loan"
+
+equity_column : Label style header term_loan_column right
+equity_column = "Equity"
+
+capex_column : Label style header equity_column right
+capex_column = "Capex"
+
+dividends_column : Label style header capex_column right
+dividends_column = "Dividends"
+
+buybacks_column : Label style header dividends_column right
+buybacks_column = "Buybacks"
+
+history : Value style input_table quarter_column down
+history = csv "quarterly_history.csv"
