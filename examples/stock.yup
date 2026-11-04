@@ -23,43 +23,43 @@ header = label
 units : Style Cell
 units = { format = '#,##0' }
 
-opening_label : Label label at stock_sheet $B$2
+opening_label : Label style label at stock_sheet $B$2
 opening_label = "Stock at the start"
 
-opening : Value Number units opening_label right 2
+opening : Value Number style units opening_label right 2
 opening = 120
 
-threshold_label : Label label opening_label down
+threshold_label : Label style label opening_label down
 threshold_label = "Reorder below"
 
-threshold : Value Number units threshold_label right 2
+threshold : Value Number style units threshold_label right 2
 threshold = 50
 
 // A row of headers, each beside the one before, and the table and the formulas below them.
-week_header : Label header threshold_label down 2
+week_header : Label style header threshold_label down 2
 week_header = "Week"
 
-delivered_header : Label header week_header right
+delivered_header : Label style header week_header right
 delivered_header = "Delivered"
 
-sold_header : Label header delivered_header right
+sold_header : Label style header delivered_header right
 sold_header = "Sold"
 
-stock_header : Label header sold_header right
+stock_header : Label style header sold_header right
 stock_header = "Stock"
 
-reorder_header : Label header stock_header right
+reorder_header : Label style header stock_header right
 reorder_header = "Reorder?"
 
-weeks : Value units week_header down
+weeks : Value style units week_header down
 weeks = csv "stock.csv"
 
 // What is left at the end of a week is what was left the week before, plus what came in, less
 // what went out: a value carried from one row to the next, which the workbook works out with a
 // scan down the rows.
-stock : Formula Number units stock_header down
+stock : Formula Number style units stock_header down
 stock = lag 1 stock seed opening + column "delivered" weeks - column "sold" weeks
 
 // A formula of logicals: whether each week ends below the threshold.
-reorder : Formula Logical _ reorder_header down
+reorder : Formula Logical reorder_header down
 reorder = stock < threshold

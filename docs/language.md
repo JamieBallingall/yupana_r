@@ -20,16 +20,16 @@ forecast = { name = 'Forecast' }
 label : Style Cell
 label = { format = '@' }
 
-horizon_label : Label label at forecast $B$2
+horizon_label : Label style label at forecast $B$2
 horizon_label = "Forecast horizon (years)"
 
-horizon : Value Number _ horizon_label right 2
+horizon : Value Number horizon_label right 2
 horizon = 5
 
-year_label : Label label horizon_label down 2
+year_label : Label style label horizon_label down 2
 year_label = "Year"
 
-year : Formula Number _ year_label right 2
+year : Formula Number year_label right 2
 year = 1 .. horizon
 ```
 
@@ -60,14 +60,16 @@ A signature starts with the binding's role, which says what the binding becomes.
 
 ## Signatures
 
-A signature's parts come in this order:
+A signature starts with the binding's role, then its type. Each part after them starts with a
+keyword, and they come in any order: each says what it is, and a part given twice is an error.
+Every step prints them in the order of this table.
 
 | Part | Example | Which roles |
 |---|---|---|
 | role | `Formula` | all |
 | type | `Number`, `Number -> Number`, `Cell` | see below |
-| style | `money`, or `_` for the default | `Formula`, `Value`, `Label`: required |
-| size | `[1, n - 1]` | `Formula`, `Value`, `Label`, `Local`: optional, checked |
+| style | `style money` | `Formula`, `Value`, `Label`: optional; without one, the default |
+| size | `size [1, n - 1]` | `Formula`, `Value`, `Label`, `Local`: optional, checked |
 | start | `start [0, 1]` | `Formula`, `Value`, `Label`, `Local`: optional, checked |
 | place | `at forecast $B$2`, `revenue down 2` | `Formula`, `Value`, `Label`: required |
 
@@ -85,7 +87,7 @@ segments : Size Fixed
 segments = 3
 
 n : Size Unknown
-year : Formula Number _ [1, n] year_label right 2
+year : Formula Number size [1, n] year_label right 2
 year = 1 .. horizon
 ```
 
@@ -119,7 +121,7 @@ the workbook is written, and only its values are written: labels name its column
 discount : Lambda Number -> Number -> Number
 discount rate years = 1 / (1 + rate) ^ years
 
-discount_factor : Formula Number factor factor_label right 2
+discount_factor : Formula Number style factor factor_label right 2
 discount_factor = discount discount_rate year
 ```
 
@@ -134,13 +136,13 @@ lambda is written once, however it is called.
 ## Values carried from one position to the next
 
 ```text
-opening : Formula Number money opening_label right 2
+opening : Formula Number style money opening_label right 2
 opening = lag 1 closing seed amount
 
-repayment : Formula Number money opening down
+repayment : Formula Number style money opening down
 repayment = min scheduled opening
 
-closing : Formula Number total repayment down
+closing : Formula Number style total repayment down
 closing = opening - repayment
 ```
 
@@ -239,7 +241,7 @@ Every expression has a size in rows and columns, and a span: where it sits along
 - `a .. b` is one row. If `b` is a whole number or a fixed size, its length is known. Otherwise
   it introduces a new unknown size, decided in the workbook. Two ranges made by two `..` have
   different sizes, even if they look the same: make every range on a timeline from one `..`.
-- A signature can name an unknown size: `year : Formula Number _ [1, n] …` with
+- A signature can name an unknown size: `year : Formula Number size [1, n] …` with
   `n : Size Unknown`. The name is checked, and each declared size names exactly one `..`. An
   unknown size no signature names is called after the binding that made it, such as `year_n`.
 - Operators and functions that work position by position need operands of the same size and
@@ -321,7 +323,8 @@ The types of style, and their fields:
   of its type. A field's value is a record, or a style of the field's type by name.
 - `base { … }` builds a style on another. It merges field by field at every depth and only
   adds: setting a field that the base has already set, at any depth, is an error.
-- A formula, value or label names a style of type `Cell`, or `_` for the default.
+- A formula, value or label may name a style of type `Cell`, as in `style money`; without one,
+  its cells take the default.
 - A font's name has at most 31 characters, and its size is from 1 to 409.55 points; the app keeps
   a size in twentieths of a point, so it may round one between them. An indent is at most 255,
   and goes only with a horizontal alignment of `Left` or `Right`.
@@ -357,8 +360,8 @@ forecast = { name = 'Forecast', color = red, hidden = False, style = big }
 - Every name follows the rules for defined names, so that exporting a binding never forces a
   rename. A name cannot read as a cell (`tax2026`) or as R1C1 notation (`r`, `c`, `r1c1`), and
   cannot be the name of a built-in function or a keyword: `across`, `at`, `down`, `east`,
-  `else`, `false`, `from`, `if`, `left`, `north`, `right`, `seed`, `south`, `start`, `then`,
-  `true`, `up`, `west` or `yup`.
+  `else`, `false`, `from`, `if`, `left`, `north`, `right`, `seed`, `size`, `south`, `start`,
+  `style`, `then`, `true`, `up`, `west` or `yup`.
 - Defined names ignore case, so these rules do too: `taX2026` reads as a cell, and `sUm` is the
   function `sum`. Two names that differ only in case are an error, as is a lambda's parameter
   that differs only in case from a name in the file. A name is written the same way everywhere:

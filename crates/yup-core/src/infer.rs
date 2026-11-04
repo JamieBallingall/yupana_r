@@ -1173,7 +1173,7 @@ impl Infer<'_> {
                         var.pos,
                         format!(
                             "nothing has the size `{name}`: name it in the signature of a range \
-                             made with `..`, such as `year : Formula Number _ [1, {name}] …`"
+                             made with `..`, such as `year : Formula Number size [1, {name}] …`"
                         ),
                     ));
                 }
@@ -1324,7 +1324,7 @@ mod tests {
             .collect()
     }
 
-    const FORECAST: &str = "horizon : Value Number _ at main D2\nhorizon = 5\nperiod : Local\nperiod \
+    const FORECAST: &str = "horizon : Value Number at main D2\nhorizon = 5\nperiod : Local\nperiod \
                             = 1 .. horizon\nrevenue : Local\nrevenue = 100 * 1.1 ^ period\n";
 
     #[test]
@@ -1392,7 +1392,7 @@ mod tests {
 
     #[test]
     fn a_signature_names_a_size_and_is_checked() {
-        let named = "n : Size Unknown\nh : Local\nh = 5\np : Local [1, n]\np = 1 .. h\nq : Local \
+        let named = "n : Size Unknown\nh : Local\nh = 5\np : Local size [1, n]\np = 1 .. h\nq : Local size \
                      [1, n - 1]\nq = tail p\n";
         assert_eq!(
             shapes(named),
@@ -1402,17 +1402,17 @@ mod tests {
                 "q [1, n - 1] start [0, 1]"
             ]
         );
-        let wrong = "n : Size Unknown\nh : Local\nh = 5\np : Local [1, n]\np = 1 .. h\nq : Local \
+        let wrong = "n : Size Unknown\nh : Local\nh = 5\np : Local size [1, n]\np = 1 .. h\nq : Local size \
                      [1, n]\nq = tail p\n";
         assert_eq!(
             typed(wrong).expect_err("wrong size"),
-            ["11:15: error: `q` has n - 1 columns, not n"]
+            ["11:20: error: `q` has n - 1 columns, not n"]
         );
     }
 
     #[test]
     fn fixed_sizes_compare_by_value() {
-        let source = "s : Size Fixed\ns = 3\nsegment : Local [1, 3]\nsegment = 1 .. s\nbase : \
+        let source = "s : Size Fixed\ns = 3\nsegment : Local size [1, 3]\nsegment = 1 .. s\nbase : \
                       Local\nbase = [100; 200; 300]\nyear : Local\nyear = 1 .. 5\ngrid : \
                       Local\ngrid = base * 1.1 ^ year\n";
         assert_eq!(

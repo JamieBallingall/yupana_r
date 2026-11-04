@@ -46,34 +46,34 @@ total = money { font = { bold = True } }
 
 // Inputs
 
-horizon_label : Label label at inputs $B$2
+horizon_label : Label style label at inputs $B$2
 horizon_label = "Forecast horizon (years)"
 
-horizon : Value Number input horizon_label right 2
+horizon : Value Number style input horizon_label right 2
 horizon = 5
 
-base_label : Label label horizon_label down
+base_label : Label style label horizon_label down
 base_label = "Revenue in the base year"
 
-base_revenue : Value Number input_money base_label right 2
+base_revenue : Value Number style input_money base_label right 2
 base_revenue = 1200
 
-growth_rate_label : Label label base_label down
+growth_rate_label : Label style label base_label down
 growth_rate_label = "Revenue growth per year"
 
-revenue_growth : Value Number input_percent growth_rate_label right 2
+revenue_growth : Value Number style input_percent growth_rate_label right 2
 revenue_growth = 0.06
 
-margin_label : Label label growth_rate_label down
+margin_label : Label style label growth_rate_label down
 margin_label = "EBITDA margin"
 
-ebitda_margin : Value Number input_percent margin_label right 2
+ebitda_margin : Value Number style input_percent margin_label right 2
 ebitda_margin = 0.22
 
-rate_label : Label label margin_label down
+rate_label : Label style label margin_label down
 rate_label = "Discount rate"
 
-discount_rate : Value Number input_percent rate_label right 2
+discount_rate : Value Number style input_percent rate_label right 2
 discount_rate = 0.09
 
 // A lambda has no cells of its own: it becomes a defined name in the workbook, holding a
@@ -83,64 +83,64 @@ discount rate years = 1 / (1 + rate) ^ years
 
 // Forecast
 
-revenue_heading : Label heading at forecast $B$2
+revenue_heading : Label style heading at forecast $B$2
 revenue_heading = "Revenue"
 
-year_label : Label label revenue_heading down
+year_label : Label style label revenue_heading down
 year_label = "Year"
 
-year : Formula Number _ year_label right 2
+year : Formula Number year_label right 2
 year = 1 .. horizon
 
 // A local has no cells: its formula is written into the formulas that use it.
 growth_factor : Local
 growth_factor = 1 + revenue_growth
 
-revenue_label : Label label year_label down
+revenue_label : Label style label year_label down
 revenue_label = "Revenue"
 
-revenue : Formula Number money revenue_label right 2
+revenue : Formula Number style money revenue_label right 2
 revenue = base_revenue * growth_factor ^ year
 
-prior_label : Label label revenue_label down
+prior_label : Label style label revenue_label down
 prior_label = "Revenue a year earlier ☺"
 
 // `lag 1` shifts revenue one year along, so this row starts under year 2.
-prior_revenue : Formula Number money revenue down 1 right 1 from west
+prior_revenue : Formula Number style money revenue down 1 right 1 from west
 prior_revenue = lag 1 revenue
 
-growth_label : Label label prior_label down
+growth_label : Label style label prior_label down
 growth_label = "Revenue growth, year on year"
 
-growth : Formula Number percent prior_revenue down
+growth : Formula Number style percent prior_revenue down
 growth = tail revenue / prior_revenue - 1
 
-profit_heading : Label heading growth_label down 2
+profit_heading : Label style heading growth_label down 2
 profit_heading = "Profit"
 
-ebitda_label : Label label profit_heading down
+ebitda_label : Label style label profit_heading down
 ebitda_label = "EBITDA"
 
-ebitda : Formula Number money ebitda_label right 2
+ebitda : Formula Number style money ebitda_label right 2
 ebitda = revenue * ebitda_margin
 
-total_ebitda_label : Label heading ebitda_label down
+total_ebitda_label : Label style heading ebitda_label down
 total_ebitda_label = "EBITDA over the forecast"
 
-total_ebitda : Formula Number total total_ebitda_label right 2
+total_ebitda : Formula Number style total total_ebitda_label right 2
 total_ebitda = sum ebitda
 
-value_heading : Label heading total_ebitda_label down 2
+value_heading : Label style heading total_ebitda_label down 2
 value_heading = "Value"
 
-factor_label : Label label value_heading down
+factor_label : Label style label value_heading down
 factor_label = "Discount factor"
 
-discount_factor : Formula Number factor factor_label right 2
+discount_factor : Formula Number style factor factor_label right 2
 discount_factor = discount discount_rate year
 
-present_value_label : Label heading factor_label down
+present_value_label : Label style heading factor_label down
 present_value_label = "Present value of EBITDA"
 
-present_value : Formula Number total present_value_label right 2
+present_value : Formula Number style total present_value_label right 2
 present_value = sum (ebitda * discount_factor)

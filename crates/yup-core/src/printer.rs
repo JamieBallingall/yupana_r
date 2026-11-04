@@ -6,7 +6,7 @@
 use crate::cells::{self, cell_name};
 use crate::syntax::{
     BinOp, Expr, ExprKind, Field, Item, ItemKind, Placement, Program, Signature, SizeKind,
-    SizeSyntax, StyleName, Type,
+    SizeSyntax, Type,
 };
 
 /// The widest line the printer writes a record on before it gives each field a line of its own.
@@ -88,18 +88,22 @@ fn field_lines(fields: &[Field]) -> String {
     out
 }
 
+/// A signature, with its parts in the canonical order whatever order they were written in: the
+/// role and type, then how the cells look, then the range's shape, then its place.
 fn signature(sig: &Signature) -> String {
     let mut parts = vec![format!("{} :", sig.name.name), sig.role.word().to_string()];
     if let Some((ty, _)) = &sig.ty {
         parts.push(type_text(ty));
     }
-    match &sig.style {
-        Some(StyleName::Default(_)) => parts.push("_".to_string()),
-        Some(StyleName::Named(name)) => parts.push(name.name.clone()),
-        None => {}
+    if let Some(style) = &sig.style {
+        parts.push(format!("style {}", style.name));
     }
     if let Some(shape) = &sig.shape {
-        parts.push(format!("[{}, {}]", size(&shape.rows), size(&shape.columns)));
+        parts.push(format!(
+            "size [{}, {}]",
+            size(&shape.rows),
+            size(&shape.columns)
+        ));
     }
     if let Some(start) = &sig.start {
         parts.push(format!("start [{}, {}]", start.row, start.column));
@@ -364,11 +368,11 @@ mod tests {
 
     #[test]
     fn printing_is_canonical() {
-        let source = "yup 0.2\n\n\n// Values\nh : Value   Number _ at  sheet  B2\nh = \
+        let source = "yup 0.2\n\n\n// Values\nh : Value   Number at  sheet  B2  style  money\nh = \
                       5 // years\n\nx=(1+2)*3-(4-5)\ny = - (2 ^ 2)  ++ \"a\\\"b\"\nz=[1,2;3,4]\n\n";
         assert_eq!(
             reprint(source),
-            "yup 0.2\n// Values\nh : Value Number _ at sheet B2\nh = 5 // \
+            "yup 0.2\n// Values\nh : Value Number style money at sheet B2\nh = 5 // \
              years\n\nx = (1 + 2) * 3 - (4 - 5)\ny = -2 ^ 2 ++ \"a\\\"b\"\nz = [1, 2; 3, 4]\n"
         );
     }
@@ -396,7 +400,7 @@ mod tests {
             "yup 0.2\nx = a || b && c || not d && (e || f)\n",
             "yup 0.2\nx = (a || b) .. c\n",
             "yup 0.2\nx = lag down 1 (a + b) seed (c * 2)\n",
-            "yup 0.2\nx : Formula Number s [s + 4, 2 * n - 1] start [0, 1] y down 2 right 1 from west\n",
+            "yup 0.2\nx : Formula Number style s size [s + 4, 2 * n - 1] start [0, 1] y down 2 right 1 from west\n",
             "yup 0.2\nx : Lambda Number -> Text -> Logical\n",
             "yup 0.2\nx = base { a = { b = Thin }, c = 'x''y' }\n",
             "yup 0.2\nx = { a = 1 }\n",

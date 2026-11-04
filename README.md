@@ -229,7 +229,7 @@ or from where the line sits in the file.
   alone where there is nothing to define, as `n : Size Unknown` does.
 
   ```text
-  revenue : Formula Number money revenue_label right 2
+  revenue : Formula Number style money revenue_label right 2
   revenue = base * (1 + rate) ^ year
   ```
 
@@ -265,9 +265,12 @@ or from where the line sits in the file.
 - **There are no labels in signatures.** A label documenting a range is a `Label` binding of its
   own, a text cell like any other, placed beside the range. Headings are labels too. Generating
   labels from formulas, for concision, may come later.
-- **A signature's parts come in a fixed order:** role, type, style, then size, start and
-  placement. `Formula`, `Value` and `Label` always name a style, or `_` for the default. A
-  signature's start is written `start [0, 1]`, so that `from` is left to placement.
+- **A signature's parts after its role and type each start with a keyword**, `style money`,
+  `size [1, n]`, `start [0, 1]`, and a place, `at forecast $B$2` or a binding and its moves, and
+  come in any order; the printer writes them in one. A signature without a style takes the
+  default. *Changed 2026-11-04: the parts first came in a fixed order, with a style or `_`
+  required; see [Built for 0.2](#built-for-02).* `start` is not `from`, which is left to
+  placement.
 - **A lambda** has a curried type and its parameters on the left of its definition. Every call
   supplies every argument, and the checker counts them. Partial application is written as an
   explicit lambda for now; compiling it into a LAMBDA may come later.
@@ -288,11 +291,11 @@ against relative placement, recorded in
 [Options considered and set aside](#options-considered-and-set-aside), no longer holds.
 
 ```text
-horizon_label : Label label at forecast $B$2
-horizon       : Value Number _ horizon_label right 2
-base_label    : Label label horizon_label down
-revenue       : Formula Number money revenue_label right 2
-growth        : Formula Number percent revenue down 1 right 1 from west
+horizon_label : Label style label at forecast $B$2
+horizon       : Value Number horizon_label right 2
+base_label    : Label style label horizon_label down
+revenue       : Formula Number style money revenue_label right 2
+growth        : Formula Number style percent revenue down 1 right 1 from west
 ```
 
 - **A root** is placed with `at`, a sheet and a cell in A1 notation: `at forecast B2`, or
@@ -440,6 +443,16 @@ is provisional. [docs/language.md](docs/language.md) describes 0.2 as it is buil
 
 - **The first line** is `yup 0.2`, and a reader of 0.2 refuses 0.1: no file in 0.1 is kept.
 - **The order of a signature's parts** is role, type, style, size, start and place.
+  *Replaced 2026-11-04 by keywords, below.*
+- **Keywords for a signature's parts** (decided 2026-11-04). After the role and the type, each
+  part starts with a keyword: `style money`, `size [1, n]`, `start [0, 1]`, and a place, which
+  starts with `at` or with the binding it is beside. Each part says what it is, so they may come
+  in any order, and every step prints them in one: role, type, style, size, start, place.
+  Liberal in what it reads and strict in what it writes, as in Postel's robustness principle, but
+  with no ambiguity to tolerate: every order means the same. The style is optional, so `_` for
+  the default style is gone, and `style` and `size` are keywords. Keywords are plain lower-case
+  words, as `at` and `from` were already: a sigil, capitals, `=` or commas would each clash with
+  something the language or the app already gives a meaning.
 - **Directions.** `a .. b` is a row, and a column is `transpose (a .. b)`, which the workbook
   gets as a column of whole numbers rather than a row transposed. `lag`, `tail` and `init` work
   along a range's one dimension; a range of more than one row and column, and anything inside a
@@ -705,37 +718,37 @@ at a cell or below another label, and each range two columns to the right of its
 ```text
 n : Size Unknown
 
-horizon_label : Label _ at forecast $B$2
+horizon_label : Label at forecast $B$2
 horizon_label = "Horizon (years)"
 
-horizon : Value Number _ horizon_label right 2
+horizon : Value Number horizon_label right 2
 horizon = 5
 
-year_label : Label _ horizon_label down 2
+year_label : Label horizon_label down 2
 year_label = "Year"
 
-year : Formula Number _ [1, n] year_label right 2
+year : Formula Number size [1, n] year_label right 2
 year = 1 .. horizon                          // n is decided in the workbook
 
-revenue_label : Label _ year_label down
+revenue_label : Label year_label down
 revenue_label = "Revenue"
 
-revenue : Formula Number money year down
+revenue : Formula Number style money year down
 revenue = 1000 * 1.1 ^ year                  // size [1, n], span [0, n)
 
-growth_label : Label _ revenue_label down
+growth_label : Label revenue_label down
 growth_label = "Revenue growth"
 
-growth : Formula Number percent revenue down 1 right 1 from west
+growth : Formula Number style percent revenue down 1 right 1 from west
 growth = tail revenue / lag 1 revenue - 1    // size [1, n - 1], span [1, n)
 ```
 
 After Ground, every binding is at a cell, and each extent is in `Unknown` variables only:
 
 ```text
-year    : Formula Number _ [1, n] at forecast D4
-revenue : Formula Number money [1, n] at forecast D5
-growth  : Formula Number percent [1, n - 1] start [0, 1] at forecast E6
+year    : Formula Number size [1, n] at forecast D4
+revenue : Formula Number style money size [1, n] at forecast D5
+growth  : Formula Number style percent size [1, n - 1] start [0, 1] at forecast E6
 ```
 
 After Lower, on the sheet:

@@ -30,50 +30,50 @@ total = money { font = { bold = True }, border = { top = { weight = Thin } } }
 
 // Inputs
 
-horizon_label : Label label at inputs $B$2
+horizon_label : Label style label at inputs $B$2
 horizon_label = "Forecast horizon (years)"
 
-horizon : Value Number _ horizon_label right 2
+horizon : Value Number horizon_label right 2
 horizon = 6
 
-segment_header : Label heading horizon_label down 2
+segment_header : Label style heading horizon_label down 2
 segment_header = "Segment"
 
-base_header : Label heading segment_header right
+base_header : Label style heading segment_header right
 base_header = "Revenue in the base year"
 
-growth_header : Label heading base_header right
+growth_header : Label style heading base_header right
 growth_header = "Growth per year"
 
-segments : Value _ segment_header down
+segments : Value segment_header down
 segments = csv "segments.csv"
 
 // Revenue
 
-year_label : Label label at revenue_sheet $B$2
+year_label : Label style label at revenue_sheet $B$2
 year_label = "Year"
 
-year : Formula Number _ year_label right 2
+year : Formula Number year_label right 2
 year = 1 .. horizon
 
 // A formula of text: the segments' names, one to a row, beside their revenue.
-names : Formula Text label year_label down
+names : Formula Text style label year_label down
 names = column "segment" segments
 
 // One row per segment, one column per year: a column of segments times a row of years gives a
 // grid.
-revenue : Formula Number money names right 2
+revenue : Formula Number style money names right 2
 revenue = column "base" segments * (1 + column "growth" segments) ^ year
 
 // The rows above have a fixed height, so these rows can go below them.
-total_label : Label heading names down 2
+total_label : Label style heading names down 2
 total_label = "Total revenue"
 
-total_revenue : Formula Number total total_label right 2
+total_revenue : Formula Number style total total_label right 2
 total_revenue = sum_columns revenue
 
-total_growth_label : Label label total_label down
+total_growth_label : Label style label total_label down
 total_growth_label = "Growth in total revenue"
 
-total_growth : Formula Number percent total_revenue down 1 right 1 from west
+total_growth : Formula Number style percent total_revenue down 1 right 1 from west
 total_growth = tail total_revenue / lag 1 total_revenue - 1

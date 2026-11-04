@@ -33,73 +33,73 @@ total = money
 
 // Inputs
 
-amount_label : Label label at inputs $B$2
+amount_label : Label style label at inputs $B$2
 amount_label = "Amount borrowed"
 
-amount : Value Number money amount_label right 2
+amount : Value Number style money amount_label right 2
 amount = 12000
 
-rate_label : Label label amount_label down
+rate_label : Label style label amount_label down
 rate_label = "Interest rate"
 
-rate : Value Number percent rate_label right 2
+rate : Value Number style percent rate_label right 2
 rate = 0.065
 
-term_label : Label label rate_label down
+term_label : Label style label rate_label down
 term_label = "Term (years)"
 
-term : Value Number _ term_label right 2
+term : Value Number term_label right 2
 term = 5
 
-horizon_label : Label label term_label down
+horizon_label : Label style label term_label down
 horizon_label = "Horizon (years)"
 
-horizon : Value Number _ horizon_label right 2
+horizon : Value Number horizon_label right 2
 horizon = 7
 
 // Loan
 
-year_label : Label label at loan $B$2
+year_label : Label style label at loan $B$2
 year_label = "Year"
 
-year : Formula Number _ year_label right 2
+year : Formula Number year_label right 2
 year = 1 .. horizon
 
-scheduled_label : Label label year_label down
+scheduled_label : Label style label year_label down
 scheduled_label = "Scheduled repayment"
 
-scheduled : Formula Number money year down
+scheduled : Formula Number style money year down
 scheduled = if year <= term then amount / term else 0
 
 // These three depend on each other in a cycle, which `lag 1 closing seed amount` breaks: the
 // opening balance is the closing balance a year back, starting from the amount borrowed. The
 // workbook works the closing balance out with SCAN, one year at a time.
-opening_label : Label label scheduled_label down 2
+opening_label : Label style label scheduled_label down 2
 opening_label = "Opening balance"
 
-opening : Formula Number money opening_label right 2
+opening : Formula Number style money opening_label right 2
 opening = lag 1 closing seed amount
 
-repayment_label : Label label opening_label down
+repayment_label : Label style label opening_label down
 repayment_label = "Repayment"
 
-repayment : Formula Number money opening down
+repayment : Formula Number style money opening down
 repayment = min scheduled opening
 
-closing_label : Label label repayment_label down
+closing_label : Label style label repayment_label down
 closing_label = "Closing balance"
 
-closing : Formula Number total repayment down
+closing : Formula Number style total repayment down
 closing = opening - repayment
 
-interest_label : Label label closing_label down 2
+interest_label : Label style label closing_label down 2
 interest_label = "Interest"
 
-interest : Formula Number money interest_label right 2
+interest : Formula Number style money interest_label right 2
 interest = opening * rate
 
-total_interest_label : Label label interest_label down
+total_interest_label : Label style label interest_label down
 total_interest_label = "Interest over the horizon"
 
-total_interest : Formula Number total total_interest_label right 2
+total_interest : Formula Number style total total_interest_label right 2
 total_interest = sum interest

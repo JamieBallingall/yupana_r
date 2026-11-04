@@ -12,8 +12,7 @@ use crate::functions::Builtin;
 use crate::lexer::{Lexeme, Token, lex};
 use crate::syntax::{
     Axis, BinOp, CellType, Direction, Expr, ExprKind, Field, Ident, Item, ItemKind, Move, Offset,
-    Placement, Program, Role, ShapeSyntax, Side, Signature, SizeKind, SizeSyntax, StyleName,
-    StyleType, Type,
+    Placement, Program, Role, ShapeSyntax, Side, Signature, SizeKind, SizeSyntax, StyleType, Type,
 };
 
 /// The language version this reader accepts, as the first line of a file gives it.
@@ -22,7 +21,7 @@ pub const VERSION: &str = "0.2";
 /// Names that cannot be used for bindings, size variables or functions.
 pub const KEYWORDS: &[&str] = &[
     "across", "at", "down", "east", "else", "false", "from", "if", "left", "north", "right",
-    "seed", "south", "start", "then", "true", "up", "west", "yup",
+    "seed", "size", "south", "start", "style", "then", "true", "up", "west", "yup",
 ];
 
 /// Parses a whole file.
@@ -331,7 +330,7 @@ impl Parser {
             let hint = match word.as_str() {
                 "Input" => {
                     "; a cell written in the file is a `Value`, such as `rate : Value Number \
-                     percent rate_label right 2`"
+                     style percent rate_label right 2`"
                 }
                 _ => "",
             };
@@ -345,29 +344,89 @@ impl Parser {
         };
         let mut sig = Signature::new(name, role, role_pos);
         sig.ty = self.signature_type(role)?;
-        if role.is_placed() {
-            sig.style = Some(match self.peek().clone() {
-                Token::Underscore => StyleName::Default(self.advance().pos),
-                Token::Name(name) if !is_keyword(&name) => StyleName::Named(self.ident()?),
-                _ => return Err(self.unexpected("a style's name, or `_` for the default")),
-            });
-        }
-        if matches!(
+        self.signature_parts(&mut sig)?;
+        Ok(ItemKind::Signature(Box::new(sig)))
+    }
+
+    /// The parts of a signature after its role and type, each led by a keyword, in any order:
+    /// `style money`, `size [1, n]`, `start [0, 1]`, and a place, `at forecast $B$2` or a binding
+    /// and its moves. Each part says what it is, so the order carries no meaning, and the printer
+    /// writes them back in one order.
+    fn signature_parts(&mut self, sig: &mut Signature) -> Parsed<()> {
+        let role = sig.role;
+        let has_cells = matches!(
             role,
             Role::Formula | Role::Value | Role::Label | Role::Local
-        ) {
-            if *self.peek() == Token::LBracket {
-                sig.shape = Some(self.shape()?);
+        );
+        loop {
+            let pos = self.pos();
+            let word = match self.peek().clone() {
+                Token::Name(word) => word,
+                Token::Underscore => {
+                    return Err(Diagnostic::error(
+                        pos,
+                        "a signature leaves the style out for the default, and names one with \
+                         `style`, as in `style money`; `_` is not needed",
+                    ));
+                }
+                Token::LBracket => {
+                    return Err(Diagnostic::error(
+                        pos,
+                        "a size follows `size`, as in `size [1, n]`",
+                    ));
+                }
+                _ => return Ok(()),
+            };
+            let (what, allowed) = match word.as_str() {
+                "style" => ("style", role.is_placed()),
+                "size" => ("size", has_cells),
+                "start" => ("start", has_cells),
+                "at" => ("place", role.is_placed()),
+                _ if Direction::from_word(&word).is_some() => {
+                    return Err(Diagnostic::error(
+                        pos,
+                        format!(
+                            "a move follows the binding it is made from, as in `revenue {word} 1`"
+                        ),
+                    ));
+                }
+                _ if is_keyword(&word) => return Ok(()),
+                _ => ("place", role.is_placed()),
+            };
+            if !allowed {
+                return Err(Diagnostic::error(
+                    pos,
+                    format!("a {} signature has no {what}", role.word()),
+                ));
             }
-            if self.at_name("start") {
-                let pos = self.advance().pos;
-                sig.start = Some(self.offset(pos)?);
+            let given = match what {
+                "style" => sig.style.is_some(),
+                "size" => sig.shape.is_some(),
+                "start" => sig.start.is_some(),
+                _ => sig.place.is_some(),
+            };
+            if given {
+                return Err(Diagnostic::error(
+                    pos,
+                    format!("this signature already gives a {what}"),
+                ));
+            }
+            match what {
+                "style" => {
+                    self.advance();
+                    sig.style = Some(self.ident()?);
+                }
+                "size" => {
+                    self.advance();
+                    sig.shape = Some(self.shape()?);
+                }
+                "start" => {
+                    self.advance();
+                    sig.start = Some(self.offset(pos)?);
+                }
+                _ => sig.place = Some(self.placement()?),
             }
         }
-        if role.is_placed() {
-            sig.place = self.placement()?;
-        }
-        Ok(ItemKind::Signature(Box::new(sig)))
     }
 
     /// The type after a role: optional for what holds cells, and required for a lambda and a
@@ -434,7 +493,7 @@ impl Parser {
     }
 
     /// Where a binding goes: `at sheet B2`, or a binding and up to two moves from it.
-    fn placement(&mut self) -> Parsed<Option<Placement>> {
+    fn placement(&mut self) -> Parsed<Placement> {
         if self.at_name("at") {
             let pos = self.advance().pos;
             let sheet = self.ident()?;
@@ -469,31 +528,13 @@ impl Parser {
                 ));
             }
             self.advance();
-            return Ok(Some(Placement::At {
+            return Ok(Placement::At {
                 sheet,
                 row,
                 column,
                 absolute,
                 pos,
-            }));
-        }
-        let Token::Name(name) = self.peek().clone() else {
-            return Ok(None);
-        };
-        // A move straight after the style means the style was left out, and the reference read
-        // in its place.
-        if Direction::from_word(&name).is_some() {
-            return Err(Diagnostic::error(
-                self.pos(),
-                format!(
-                    "a move follows the binding it is made from; if `{name}` is meant to move from \
-                     the name before it, that name was read as the style, which comes first: write \
-                     a style, or `_` for the default, before it"
-                ),
-            ));
-        }
-        if is_keyword(&name) {
-            return Ok(None);
+            });
         }
         let reference = self.ident()?;
         let mut moves: Vec<Move> = Vec::new();
@@ -543,12 +584,14 @@ impl Parser {
             });
         }
         if moves.is_empty() {
+            // The habit of an older syntax, a style named without its keyword, ends up here.
+            let name = &reference.name;
             return Err(self.unexpected(&format!(
-                "a move from `{}`, such as `{} down` or `{} right 2`",
-                reference.name, reference.name, reference.name
+                "a move from `{name}`, such as `{name} down` or `{name} right 2`; if `{name}` is \
+                 a style, it goes after `style`, as in `style {name}`"
             )));
         }
-        Ok(Some(Placement::Beside { reference, moves }))
+        Ok(Placement::Beside { reference, moves })
     }
 
     fn shape(&mut self) -> Parsed<ShapeSyntax> {
@@ -1035,13 +1078,14 @@ mod tests {
     }
 
     #[test]
-    fn a_signature_takes_its_parts_in_order() {
+    fn a_signature_takes_its_parts_by_keyword() {
         let sig = signature(
-            "g : Formula Number percent [1, n - 1] start [0, 1] revenue down 1 right 1 from west",
+            "g : Formula Number style percent size [1, n - 1] start [0, 1] revenue down 1 right 1 \
+             from west",
         );
         assert_eq!(sig.role, Role::Formula);
         assert!(matches!(sig.ty, Some((Type::Cell(CellType::Number), _))));
-        assert!(matches!(&sig.style, Some(StyleName::Named(style)) if style.name == "percent"));
+        assert!(matches!(&sig.style, Some(style) if style.name == "percent"));
         let shape = sig.shape.as_ref().expect("a shape");
         assert_eq!(shape.columns.constant, -1);
         assert_eq!(sig.start.as_ref().map(|s| (s.row, s.column)), Some((0, 1)));
@@ -1051,7 +1095,7 @@ mod tests {
         assert_eq!(reference.name, "revenue");
         assert_eq!(moves.len(), 2);
         assert_eq!(moves[1].from, Some(Side::West));
-        let at = signature("x : Label _ at forecast B2");
+        let at = signature("x : Label at forecast B2");
         assert!(matches!(
             at.place,
             Some(Placement::At {
@@ -1062,37 +1106,58 @@ mod tests {
         ));
         let lambda = signature("f : Lambda Number -> Number -> Number");
         assert!(matches!(lambda.ty, Some((Type::Function(ref types), _)) if types.len() == 3));
+        let shuffled = signature(
+            "g : Formula Number revenue down 1 right 1 from west start [0, 1] size [1, n - 1] \
+             style percent",
+        );
+        assert_eq!(
+            shuffled.style.map(|style| style.name),
+            Some("percent".to_string())
+        );
+        assert_eq!(shuffled.start.map(|s| (s.row, s.column)), Some((0, 1)));
+        assert!(shuffled.shape.is_some());
+        assert!(matches!(shuffled.place, Some(Placement::Beside { .. })));
     }
 
     #[test]
     fn a_signature_explains_what_it_lacks() {
         assert_eq!(
             errors(
-                "yup 0.2\nx : Input\ny : Formula Number money revenue\nz : Formula _ x left 1 left 2\n"
+                "yup 0.2\nx : Input\ny : Formula Number money revenue_label right 2\nz : Formula x \
+                 left 1 left 2\n"
             ),
             [
                 "2:5: error: `Input` is not a role; a signature starts with Formula, Value, Label, \
                  Local, Lambda, Style, Sheet, Workbook or Size; a cell written in the file is a \
-                 `Value`, such as `rate : Value Number percent rate_label right 2`",
-                "3:33: error: expected a move from `revenue`, such as `revenue down` or `revenue \
-                 right 2`, found the end of the line",
-                "4:24: error: a placement moves at most once along each axis: once left or right, \
+                 `Value`, such as `rate : Value Number style percent rate_label right 2`",
+                "3:26: error: expected a move from `money`, such as `money down` or `money right \
+                 2`; if `money` is a style, it goes after `style`, as in `style money`, found \
+                 `revenue_label`",
+                "4:22: error: a placement moves at most once along each axis: once left or right, \
                  and once up or down",
             ]
         );
         assert_eq!(
-            errors("yup 0.2\nx : Formula Number revenue_label right 2\n"),
+            errors(
+                "yup 0.2\na : Formula Number style revenue_label right 2\nb : Formula _ at s B2\nc \
+                 : Formula [1, 2] at s B2\nd : Formula style x at s B2 style y\ne : Local at s \
+                 B2\nf : Lambda Number -> Number style money\n"
+            ),
             [
-                "2:34: error: a move follows the binding it is made from; if `right` is meant to \
-                 move from the name before it, that name was read as the style, which comes first: \
-                 write a style, or `_` for the default, before it"
+                "2:40: error: a move follows the binding it is made from, as in `revenue right 1`",
+                "3:13: error: a signature leaves the style out for the default, and names one \
+                 with `style`, as in `style money`; `_` is not needed",
+                "4:13: error: a size follows `size`, as in `size [1, n]`",
+                "5:29: error: this signature already gives a style",
+                "6:11: error: a Local signature has no place",
+                "7:29: error: a Lambda signature has no style",
             ]
         );
     }
 
     #[test]
     fn a_cell_may_be_written_with_dollars_but_only_whole() {
-        let at = signature("x : Label _ at forecast $B$2");
+        let at = signature("x : Label at forecast $B$2");
         assert!(matches!(
             at.place,
             Some(Placement::At {
@@ -1103,11 +1168,11 @@ mod tests {
             })
         ));
         assert_eq!(
-            errors("yup 0.2\nx : Label _ at main $B2\ny : Label _ at main B$2\nz = $B$2 + 1\n"),
+            errors("yup 0.2\nx : Label at main $B2\ny : Label at main B$2\nz = $B$2 + 1\n"),
             [
-                "2:21: error: `$B2` fixes only part of the cell; a binding's cell never moves, so \
+                "2:19: error: `$B2` fixes only part of the cell; a binding's cell never moves, so \
                  write `$B$2` or `B2`",
-                "3:21: error: `B$2` fixes only part of the cell; a binding's cell never moves, so \
+                "3:19: error: `B$2` fixes only part of the cell; a binding's cell never moves, so \
                  write `$B$2` or `B2`",
                 "4:5: error: `$B$2` reads as a cell; formulas in .yup name bindings, not cells",
             ]
@@ -1219,8 +1284,8 @@ mod tests {
     #[test]
     fn a_size_subtracts_only_numbers() {
         assert_eq!(
-            errors("yup 0.2\nx : Local [1, n - m]\n"),
-            ["2:19: error: a size can subtract a number but not a size variable"]
+            errors("yup 0.2\nx : Local size [1, n - m]\n"),
+            ["2:24: error: a size can subtract a number but not a size variable"]
         );
     }
 }

@@ -44,7 +44,7 @@ pub struct InputFile {
 /// The input files a source reads with `csv "file.csv"`, in the order they are named.
 ///
 /// ```
-/// let source = "yup 0.2\nhistory : Value _ at main B2\nhistory = csv \"history.csv\"\n";
+/// let source = "yup 0.2\nhistory : Value at main B2\nhistory = csv \"history.csv\"\n";
 /// let files = yup_core::input_files(source).unwrap();
 /// assert_eq!(files[0].name, "history.csv");
 /// ```
@@ -155,8 +155,8 @@ pub struct Built {
 /// ```
 /// let source = "yup 0.2\nworkbook : Workbook\nworkbook = { sheets = [main] }\n\
 ///               main : Sheet\nmain = { name = 'Main' }\n\
-///               rate : Value Number _ at main D2\nrate = 0.05\n\
-///               growth : Formula Number _ rate down\ngrowth = (1 + rate) ^ (1 .. 3)\n";
+///               rate : Value Number at main D2\nrate = 0.05\n\
+///               growth : Formula Number rate down\ngrowth = (1 + rate) ^ (1 .. 3)\n";
 /// let built = yup_core::build(source, &yup_core::Inputs::new()).unwrap();
 /// assert!(built.xlsx.starts_with(b"PK"));
 /// assert!(built.warnings.is_empty());
@@ -181,8 +181,8 @@ pub fn build(source: &str, inputs: &Inputs) -> Result<Built, Vec<Diagnostic>> {
 ///               years : Local\nyears = 1 .. 5\ngrowth : Local\ngrowth = tail years / lag 1 years\n";
 /// let shown = show(source, Step::Infer, &Inputs::new()).unwrap();
 /// assert!(shown.text.ends_with(
-///     "years : Local Number [1, 5]\nyears = 1 .. 5\n\
-///      growth : Local Number [1, 4] start [0, 1]\ngrowth = tail years / lag 1 years\n"
+///     "years : Local Number size [1, 5]\nyears = 1 .. 5\n\
+///      growth : Local Number size [1, 4] start [0, 1]\ngrowth = tail years / lag 1 years\n"
 /// ));
 /// ```
 pub fn show(source: &str, step: Step, inputs: &Inputs) -> Result<Shown, Vec<Diagnostic>> {
@@ -283,15 +283,15 @@ mod tests {
     }
 
     const FORECAST: &str = "\
-horizon_label : Label _ at main B2
+horizon_label : Label at main B2
 horizon_label = \"Horizon\"
-horizon : Value Number _ horizon_label right 2
+horizon : Value Number horizon_label right 2
 horizon = 5
-period : Formula _ horizon down 2
+period : Formula horizon down 2
 period = 1 .. horizon
-revenue : Formula _ period down
+revenue : Formula period down
 revenue = 100 * 1.1 ^ period
-growth : Formula _ revenue down 1 right 1 from west
+growth : Formula revenue down 1 right 1 from west
 growth = tail revenue / lag 1 revenue - 1
 ";
 
@@ -300,16 +300,16 @@ growth = tail revenue / lag 1 revenue - 1
         assert_eq!(
             body(&text(FORECAST, Step::Infer)),
             "\
-horizon_label : Label _ [1, 1] at main B2
+horizon_label : Label size [1, 1] at main B2
 horizon_label = \"Horizon\"
-horizon : Value Number _ [1, 1] horizon_label right 2
+horizon : Value Number size [1, 1] horizon_label right 2
 horizon = 5
 period_n : Size Unknown
-period : Formula Number _ [1, period_n] horizon down 2
+period : Formula Number size [1, period_n] horizon down 2
 period = 1 .. horizon
-revenue : Formula Number _ [1, period_n] period down
+revenue : Formula Number size [1, period_n] period down
 revenue = 100 * 1.1 ^ period
-growth : Formula Number _ [1, period_n - 1] start [0, 1] revenue down 1 right 1 from west
+growth : Formula Number size [1, period_n - 1] start [0, 1] revenue down 1 right 1 from west
 growth = tail revenue / lag 1 revenue - 1
 "
         );
@@ -319,10 +319,10 @@ growth = tail revenue / lag 1 revenue - 1
     fn ground_writes_every_place_as_a_cell() {
         let grounded = body(&text(FORECAST, Step::Ground));
         for line in [
-            "horizon : Value Number _ [1, 1] at main D2",
-            "period : Formula Number _ [1, period_n] at main D4",
-            "revenue : Formula Number _ [1, period_n] at main D5",
-            "growth : Formula Number _ [1, period_n - 1] start [0, 1] at main E6",
+            "horizon : Value Number size [1, 1] at main D2",
+            "period : Formula Number size [1, period_n] at main D4",
+            "revenue : Formula Number size [1, period_n] at main D5",
+            "growth : Formula Number size [1, period_n - 1] start [0, 1] at main E6",
         ] {
             assert!(grounded.contains(line), "{line}\n{grounded}");
         }
@@ -330,11 +330,11 @@ growth = tail revenue / lag 1 revenue - 1
 
     #[test]
     fn a_cell_written_with_dollars_keeps_them_and_means_the_same() {
-        let source = "a : Value Number _ at main $B$2\na = 1\nb : Value Number _ a down\nb = 2\n";
+        let source = "a : Value Number at main $B$2\na = 1\nb : Value Number a down\nb = 2\n";
         assert_eq!(body(&text(source, Step::Parse)), source);
         assert_eq!(
             body(&text(source, Step::Ground)),
-            "a : Value Number _ [1, 1] at main $B$2\na = 1\nb : Value Number _ [1, 1] at main \
+            "a : Value Number size [1, 1] at main $B$2\na = 1\nb : Value Number size [1, 1] at main \
              B3\nb = 2\n"
         );
         let plain = source.replace("$B$2", "B2");
@@ -347,8 +347,19 @@ growth = tail revenue / lag 1 revenue - 1
     }
 
     #[test]
+    fn a_signature_prints_in_one_order_whatever_order_it_is_written_in() {
+        let source = "money : Style Cell\nmoney = { format = '0.00' }\nyear : Formula at main \
+                      $D$2 size [1, 3] style money\nyear = 1 .. 3\n";
+        let parsed = text(source, Step::Parse);
+        assert!(
+            parsed.contains("year : Formula style money size [1, 3] at main $D$2"),
+            "{parsed}"
+        );
+    }
+
+    #[test]
     fn a_name_keeps_its_case_in_the_workbook() {
-        let source = "revenue_Q1 : Value _ at main $B$2\nrevenue_Q1 = 100\ntotal : Formula _ \
+        let source = "revenue_Q1 : Value at main $B$2\nrevenue_Q1 = 100\ntotal : Formula \
                       revenue_Q1 down 1\ntotal = revenue_Q1 * 2\n";
         let listing = text(source, Step::Lower);
         for line in ["  B3     =revenue_Q1*2", "  revenue_Q1 = Main!$B$2"] {
@@ -358,16 +369,16 @@ growth = tail revenue / lag 1 revenue - 1
 
     #[test]
     fn ground_replaces_fixed_sizes_by_their_values() {
-        let source = "s : Size Fixed\ns = 3\nbase : Formula _ [s, 1] at main D2\nbase = [100; \
-                      200; 300]\nyear : Formula _ base down 1\nyear = 1 .. 5\ntotal : Formula _ \
+        let source = "s : Size Fixed\ns = 3\nbase : Formula size [s, 1] at main D2\nbase = [100; \
+                      200; 300]\nyear : Formula base down 1\nyear = 1 .. 5\ntotal : Formula \
                       year down 1\ntotal = sum_columns (base * 1.1 ^ year)\n";
         let grounded = text(source, Step::Ground);
         assert!(
-            grounded.contains("year : Formula Number _ [1, 5] at main D5"),
+            grounded.contains("year : Formula Number size [1, 5] at main D5"),
             "{grounded}"
         );
         assert!(
-            grounded.contains("base : Formula Number _ [3, 1] at main D2"),
+            grounded.contains("base : Formula Number size [3, 1] at main D2"),
             "{grounded}"
         );
     }
@@ -408,9 +419,9 @@ big : Style Cell
 big = { font = { size = 14 } }
 plain : Style Cell
 plain = { fill = red, border = { bottom = { weight = Double, color = red } } }
-a : Label plain at main B2
+a : Label style plain at main B2
 a = \"A\"
-b : Formula _ a right 2
+b : Formula a right 2
 b = 1 .. 3
 ";
         let listing = show(source, Step::Lower, &Inputs::new())
@@ -428,13 +439,13 @@ b = 1 .. 3
 
     #[test]
     fn a_lambda_becomes_a_lambda_and_takes_the_shape_of_its_arguments() {
-        let source = "rate : Value Number _ at main D2\nrate = 0.1\ndiscount : Lambda Number -> \
+        let source = "rate : Value Number at main D2\nrate = 0.1\ndiscount : Lambda Number -> \
                       Number -> Number\ndiscount rate t = 1 / (1 + rate) ^ t\nfactors : Formula \
-                      _ rate down\nfactors = discount rate (1 .. 3)\none : Formula _ factors \
+                      rate down\nfactors = discount rate (1 .. 3)\none : Formula factors \
                       down\none = discount 0.2 1\n";
         let typed = text(source, Step::Infer);
         assert!(
-            typed.contains("factors : Formula Number _ [1, 3] rate down"),
+            typed.contains("factors : Formula Number size [1, 3] rate down"),
             "{typed}"
         );
         let listing = text(source, Step::Lower);
@@ -463,13 +474,13 @@ b = 1 .. 3
     }
 
     const LOAN: &str = "\
-due : Formula _ at main D2
+due : Formula at main D2
 due = [30, 30, 30, 30]
-opening : Formula _ due down
+opening : Formula due down
 opening = lag 1 closing seed 100
-paid : Formula _ opening down
+paid : Formula opening down
 paid = min due opening
-closing : Formula _ paid down
+closing : Formula paid down
 closing = opening - paid
 ";
 
@@ -477,7 +488,7 @@ closing = opening - paid
     fn a_recurrence_becomes_a_scan_with_the_cycle_written_in_place() {
         let typed = text(LOAN, Step::Infer);
         assert!(
-            typed.contains("closing : Formula Number _ [1, 4]"),
+            typed.contains("closing : Formula Number size [1, 4]"),
             "{typed}"
         );
         let listing = text(LOAN, Step::Lower);
@@ -494,8 +505,8 @@ closing = opening - paid
 
     #[test]
     fn a_recurrence_can_run_down_a_column() {
-        let source = "due : Formula _ at main D2\ndue = [30; 30; 30]\nopening : Formula _ due \
-                      right\nopening = lag 1 closing seed 100\nclosing : Formula _ opening \
+        let source = "due : Formula at main D2\ndue = [30; 30; 30]\nopening : Formula due \
+                      right\nopening = lag 1 closing seed 100\nclosing : Formula opening \
                       right\nclosing = opening - due\n";
         let listing = text(source, Step::Lower);
         for line in [
@@ -523,9 +534,9 @@ closing = opening - paid
     }
 
     const SALES: &str = "\
-sales : Value _ at main D2
+sales : Value at main D2
 sales = csv \"sales.csv\"
-latest : Formula _ sales down 3
+latest : Formula sales down 3
 latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (column \"units\" sales)
 ";
 
@@ -558,7 +569,7 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
             .expect("infers")
             .text;
         assert!(
-            typed.contains("latest : Formula Number _ [1, 1] sales down 3"),
+            typed.contains("latest : Formula Number size [1, 1] sales down 3"),
             "{typed}"
         );
     }
@@ -584,7 +595,7 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
 
     #[test]
     fn logical_operators_work_position_by_position() {
-        let source = "years : Local\nyears = 1 .. 4\nmiddle : Formula _ at main D2\nmiddle = \
+        let source = "years : Local\nyears = 1 .. 4\nmiddle : Formula at main D2\nmiddle = \
                       years > 1 && years < 4 || not (years /= 2)\n";
         let listing = text(source, Step::Lower);
         assert!(
@@ -598,11 +609,11 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
 
     #[test]
     fn a_formula_binds_the_locals_it_uses_with_let() {
-        let source = "rate : Value Number _ at main D2\nrate = 0.1\nfactor : Local\nfactor = 1 + \
-                      rate\nsquared : Local\nsquared = factor * factor\nout : Formula _ rate \
+        let source = "rate : Value Number at main D2\nrate = 0.1\nfactor : Local\nfactor = 1 + \
+                      rate\nsquared : Local\nsquared = factor * factor\nout : Formula rate \
                       down\nout = squared - factor\nf : Lambda Number -> Number\nf x = x * \
                       factor\ng : Lambda Number -> Number\ng factor = factor + squared\nuse : \
-                      Formula _ out down\nuse = f 1 + g 2\n";
+                      Formula out down\nuse = f 1 + g 2\n";
         let listing = text(source, Step::Lower);
         for line in [
             "  D3     =_xlfn.LET(_xlpm.factor,1+rate,_xlpm.squared,_xlpm.factor*_xlpm.factor,\
@@ -617,7 +628,7 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
 
     #[test]
     fn a_column_of_whole_numbers_is_written_as_one() {
-        let source = "col : Formula _ at main D2\ncol = transpose (2 .. 4)\nfirst : Formula _ \
+        let source = "col : Formula at main D2\ncol = transpose (2 .. 4)\nfirst : Formula \
                       col right\nfirst = init col\n";
         let listing = text(source, Step::Lower);
         for line in [
@@ -668,12 +679,12 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
 
     #[test]
     fn nothing_is_counted_from_the_far_side_of_an_unknown_extent() {
-        let source = "h : Value Number _ at main D2\nh = 3\nrow : Formula _ h down\nrow = 1 .. \
-                      h\nafter : Formula _ row right\nafter = 1\n";
+        let source = "h : Value Number at main D2\nh = 3\nrow : Formula h down\nrow = 1 .. \
+                      h\nafter : Formula row right\nafter = 1\n";
         assert_eq!(
             errors(source, Step::Place),
             [
-                "10:23: error: `after` counts from the east side of `row`, whose width, row_n, \
+                "10:21: error: `after` counts from the east side of `row`, whose width, row_n, \
                  is unknown when the file is written; count from its west side, with `from \
                  west`, or place `after` elsewhere"
             ]
@@ -682,8 +693,7 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
 
     #[test]
     fn a_placement_that_does_not_line_up_is_a_warning() {
-        let source =
-            format!("{FORECAST}late : Formula _ growth down\nlate = tail (tail revenue)\n");
+        let source = format!("{FORECAST}late : Formula growth down\nlate = tail (tail revenue)\n");
         let shown = show(&file(&source), Step::Check, &Inputs::new()).expect("only a warning");
         assert_eq!(
             shown
@@ -701,13 +711,13 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
 
     #[test]
     fn check_finds_collisions_and_possible_spills() {
-        let clash = "a : Value _ at main D2\na = 1\nb : Value _ a right 0\nb = 2\n";
+        let clash = "a : Value at main D2\na = 1\nb : Value a right 0\nb = 2\n";
         assert_eq!(
             errors(clash, Step::Check),
             ["8:1: error: `a` and `b` would share the cell D2"]
         );
-        let spill = "h : Value Number _ at main D2\nh = 3\nrow : Formula _ h down\nrow = 1 .. \
-                     h\nside : Value _ at main I3\nside = 1\n";
+        let spill = "h : Value Number at main D2\nh = 3\nrow : Formula h down\nrow = 1 .. \
+                     h\nside : Value at main I3\nside = 1\n";
         let shown = show(&file(spill), Step::Check, &Inputs::new()).expect("only a warning");
         assert_eq!(
             shown.warnings[0].to_string(),
@@ -715,7 +725,7 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
              would show #SPILL!"
         );
         assert!(shown.text.contains(
-            "row : Formula Number _ [1, row_n] at main D3 // warning: `row` spills into `side` \
+            "row : Formula Number size [1, row_n] at main D3 // warning: `row` spills into `side` \
              once row_n grows large enough; the workbook would show #SPILL!"
         ));
         assert_eq!(

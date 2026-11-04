@@ -39,7 +39,8 @@ pub enum Token {
     Semicolon,
     Colon,
     Equals,
-    /// `_`, which stands for a default.
+    /// `_` on its own. Nothing in the language uses it; it is read so that the `_` an older
+    /// signature wrote for the default style gets an error that says what to write instead.
     Underscore,
     Arrow,
     Plus,

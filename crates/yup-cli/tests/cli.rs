@@ -28,8 +28,8 @@ fn text(bytes: &[u8]) -> String {
 }
 
 const SOURCE: &str = "yup 0.2\nworkbook : Workbook\nworkbook = { sheets = [main] }\nmain : \
-                      Sheet\nmain = { name = 'Main' }\nrate : Value Number _ at main D2\nrate = \
-                      0.05\ngrowth : Formula _ rate down\ngrowth = (1 + rate) ^ (1 .. 3)\n";
+                      Sheet\nmain = { name = 'Main' }\nrate : Value Number at main D2\nrate = \
+                      0.05\ngrowth : Formula rate down\ngrowth = (1 + rate) ^ (1 .. 3)\n";
 
 #[test]
 fn show_prints_what_a_step_makes_of_the_file() {
@@ -38,8 +38,8 @@ fn show_prints_what_a_step_makes_of_the_file() {
     assert_eq!(
         text(&output.stdout),
         "yup 0.2\nworkbook : Workbook\nworkbook = { sheets = [main] }\nmain : Sheet\nmain = { name = \
-         'Main' }\nrate : Value Number _ [1, 1] at main D2\nrate = 0.05\ngrowth : Formula Number _ \
-         [1, 3] at main D3\ngrowth = (1 + rate) ^ (1 .. 3)\n"
+         'Main' }\nrate : Value Number size [1, 1] at main D2\nrate = 0.05\ngrowth : Formula Number \
+         size [1, 3] at main D3\ngrowth = (1 + rate) ^ (1 .. 3)\n"
     );
 }
 
@@ -128,7 +128,7 @@ fn build_reads_input_files_beside_the_source() {
     assert!(output.status.success(), "{}", text(&output.stderr));
     let output = yup(
         &["check", "-"],
-        b"yup 0.2\nt : Value _ at main B2\nt = csv \"nowhere.csv\"\n",
+        b"yup 0.2\nt : Value at main B2\nt = csv \"nowhere.csv\"\n",
     );
     assert_eq!(output.status.code(), Some(1));
     assert!(

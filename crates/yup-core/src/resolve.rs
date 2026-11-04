@@ -19,7 +19,7 @@ use crate::printer::expression;
 use crate::style::{self, CellStyle, Declared, Evaluator, Font, Rgb, Value};
 use crate::syntax::{
     CellType, Expr, ExprKind, Field, Ident, ItemKind, Move, Placement, Program, Role, Signature,
-    SizeKind, StyleName, StyleType, Type,
+    SizeKind, StyleType, Type,
 };
 
 /// The most characters a cell can hold, from the spreadsheet app's published limits.
@@ -257,7 +257,7 @@ pub fn resolve(program: &Program, inputs: &Inputs) -> Result<Model, Vec<Diagnost
             continue;
         }
         binding.style = match &signature_of(program, binding).style {
-            Some(StyleName::Named(name)) => styles
+            Some(name) => styles
                 .named(&name.name, StyleType::Cell, name.pos)
                 .map(|value| style::cell(&value))
                 .filter(|cell| match style::cell_problem(cell) {
@@ -268,7 +268,7 @@ pub fn resolve(program: &Program, inputs: &Inputs) -> Result<Model, Vec<Diagnost
                     }
                     None => true,
                 }),
-            _ => Some(CellStyle::default()),
+            None => Some(CellStyle::default()),
         };
     }
 
@@ -538,7 +538,7 @@ fn pair(program: &Program, errors: &mut Vec<Diagnostic>) -> (Vec<Paired>, Vec<Si
                         item.pos,
                         format!(
                             "`{0}` has no signature above it; a binding is a signature, such as \
-                             `{0} : Formula Number _ …`, and then its definition",
+                             `{0} : Formula Number …`, and then its definition",
                             name.name
                         ),
                     )),
@@ -1761,8 +1761,8 @@ mod tests {
     #[test]
     fn a_signature_gives_the_role() {
         let model = model(
-            "h_label : Label _ at s B2\nh_label = \"Horizon\"\nh : Value Number _ h_label right \
-             2\nh = 5\nx : Formula Number _ h down\nx = h * 2\ny : Local\ny = x\n",
+            "h_label : Label at s B2\nh_label = \"Horizon\"\nh : Value Number h_label right \
+             2\nh = 5\nx : Formula Number h down\nx = h * 2\ny : Local\ny = x\n",
         );
         let roles: Vec<Role> = model.bindings.iter().map(|b| b.role).collect();
         assert_eq!(
@@ -1809,7 +1809,7 @@ mod tests {
                 "10:1: error: this defines `c`, but the signature above it is of `b`; a \
                  definition follows its own signature",
                 "11:1: error: `d` has no signature above it; a binding is a signature, such as \
-                 `d : Formula Number _ …`, and then its definition",
+                 `d : Formula Number …`, and then its definition",
                 "12:1: error: `e` has a signature but no definition below it, such as `e = …`",
             ]
         );
@@ -1861,7 +1861,7 @@ mod tests {
     fn names_are_resolved() {
         assert_eq!(
             errors(
-                "x : Local\nx = y + sum\nz : Local\nz = x 1\nw : Local\nw = lag 1\nl : Label _ at s \
+                "x : Local\nx = y + sum\nz : Local\nz = x 1\nw : Local\nw = lag 1\nl : Label at s \
                  B2\nl = \"L\"\nv : Local\nv = l + s\n"
             ),
             [
@@ -1914,7 +1914,7 @@ mod tests {
     fn values_and_labels_are_written_in_the_file() {
         assert_eq!(
             errors(
-                "a : Value _ at s B2\na = [1, 2]\nb : Value _ a down\nb = 1 + 1\nk : Label _ b \
+                "a : Value at s B2\na = [1, 2]\nb : Value a down\nb = 1 + 1\nk : Label b \
                  down\nk = 'K'\nn : Size Unknown\nn = 3\n"
             ),
             [
@@ -1985,14 +1985,14 @@ mod tests {
     fn placements_are_resolved_and_go_round_in_no_circle() {
         assert_eq!(
             errors(
-                "a : Label _ b down\na = \"A\"\nb : Label _ a down\nb = \"B\"\nk : Label _ k \
-                 right\nk = \"K\"\nd : Label _ at nowhere B2\nd = \"D\"\ne : Label _\ne = \"E\"\n"
+                "a : Label b down\na = \"A\"\nb : Label a down\nb = \"B\"\nk : Label k \
+                 right\nk = \"K\"\nd : Label at nowhere B2\nd = \"D\"\ne : Label\ne = \"E\"\n"
             ),
             [
                 "14:1: error: `e` needs a place: a cell, as in `at forecast B2`, or beside \
                  another binding, as in `… e_label right 2`",
-                "10:13: error: `k` cannot be placed beside itself",
-                "12:16: error: `nowhere` is not a sheet; `at` takes a sheet and a cell, as in `at \
+                "10:11: error: `k` cannot be placed beside itself",
+                "12:14: error: `nowhere` is not a sheet; `at` takes a sheet and a cell, as in `at \
                  nowhere B2`, where `nowhere : Sheet`",
                 "6:1: error: these bindings are placed beside each other in a circle: a -> b -> \
                  a; one of them goes at a cell, with `at`",

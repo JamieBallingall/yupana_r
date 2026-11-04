@@ -17,20 +17,20 @@ two_places = { format = '0.00' }
 total : Style Cell
 total = { format = '#,##0.00', font = { bold = True } }
 
-price_label : Label label at sales $B$2
+price_label : Label style label at sales $B$2
 price_label = "Price"
 
-price : Value Number two_places price_label right 2
+price : Value Number style two_places price_label right 2
 price = 4.5
 
-quantity_label : Label label price_label down
+quantity_label : Label style label price_label down
 quantity_label = "Quantity"
 
-quantity : Value Number _ quantity_label right 2
+quantity : Value Number quantity_label right 2
 quantity = 120
 
-revenue_label : Label label quantity_label down
+revenue_label : Label style label quantity_label down
 revenue_label = "Revenue"
 
-revenue : Formula Number total revenue_label right 2
+revenue : Formula Number style total revenue_label right 2
 revenue = price * quantity

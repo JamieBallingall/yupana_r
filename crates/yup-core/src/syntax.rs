@@ -334,13 +334,6 @@ pub enum Placement {
     Beside { reference: Ident, moves: Vec<Move> },
 }
 
-/// A binding's style as its signature names it: a style's name, or `_` for the default.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum StyleName {
-    Default(Pos),
-    Named(Ident),
-}
-
 /// Everything a signature line says about a binding.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Signature {
@@ -348,7 +341,8 @@ pub struct Signature {
     pub role: Role,
     pub role_pos: Pos,
     pub ty: Option<(Type, Pos)>,
-    pub style: Option<StyleName>,
+    /// The style named by `style money`; without one, the cells take the default.
+    pub style: Option<Ident>,
     pub shape: Option<ShapeSyntax>,
     pub start: Option<Offset>,
     pub place: Option<Placement>,
