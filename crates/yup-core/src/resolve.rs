@@ -14,6 +14,7 @@ use crate::cells::{looks_like_cell, looks_like_r1c1};
 use crate::csv::{self, Table};
 use crate::diagnostic::{Diagnostic, Pos};
 use crate::functions::Builtin;
+use crate::parser::is_keyword;
 use crate::printer::expression;
 use crate::style::{self, CellStyle, Declared, Evaluator, Font, Rgb, Value};
 use crate::syntax::{
@@ -230,6 +231,7 @@ pub fn resolve(program: &Program, inputs: &Inputs) -> Result<Model, Vec<Diagnost
         });
     }
     fixed_sizes(program, &pairs, &mut sizes, &mut errors);
+    errors.extend(parameter_spellings(program, &bindings, &sizes, &symbols));
 
     // Styles are worked out first: placed bindings, sheets and the workbook name them.
     let declared: Vec<Declared> = bindings
@@ -373,6 +375,52 @@ pub fn resolve(program: &Program, inputs: &Inputs) -> Result<Model, Vec<Diagnost
     }
 }
 
+/// Refuses a lambda's parameter that differs from one of the file's names only in case. A
+/// parameter may have the very name of a binding, which it hides inside the lambda; in another
+/// case, the workbook would read the two as one name, which the file does not.
+fn parameter_spellings(
+    program: &Program,
+    bindings: &[Binding],
+    sizes: &[SizeDecl],
+    symbols: &BTreeMap<String, Symbol>,
+) -> Vec<Diagnostic> {
+    let mut errors = Vec::new();
+    for binding in bindings.iter().filter(|b| b.role == Role::Lambda) {
+        let ItemKind::Definition { params, .. } = &program.items[binding.definition].kind else {
+            unreachable!("a binding's definition index points at a definition");
+        };
+        for param in params {
+            let other = symbols
+                .iter()
+                .find(|(name, _)| **name != param.name && name.eq_ignore_ascii_case(&param.name));
+            if let Some((name, symbol)) = other {
+                let declared = match symbol {
+                    Symbol::Binding(b) => program.items[bindings[*b].signature].pos,
+                    Symbol::Size(s) => sizes[*s].pos,
+                };
+                errors.push(case_clash(&param.name, param.pos, name, declared));
+            }
+        }
+    }
+    errors
+}
+
+/// How a name is written where it is declared, or as a function, if it differs from that only in
+/// case. A keyword is left out: none stands for a value, and `true` is written `True`.
+fn spelling_of(
+    name: &str,
+    params: &[String],
+    symbols: &BTreeMap<String, Symbol>,
+) -> Option<String> {
+    let lower = name.to_ascii_lowercase();
+    params
+        .iter()
+        .chain(symbols.keys())
+        .find(|candidate| candidate.eq_ignore_ascii_case(name))
+        .cloned()
+        .or_else(|| Builtin::lookup(&lower).map(|_| lower))
+}
+
 fn signature_of<'p>(program: &'p Program, binding: &Binding) -> &'p Signature {
     match &program.items[binding.signature].kind {
         ItemKind::Signature(sig) => sig,
@@ -391,6 +439,7 @@ fn definition_of<'p>(program: &'p Program, binding: &Binding) -> &'p Expr {
 fn pair(program: &Program, errors: &mut Vec<Diagnostic>) -> (Vec<Paired>, Vec<SizeDecl>) {
     let mut pairs = Vec::new();
     let mut sizes: Vec<SizeDecl> = Vec::new();
+    let mut spellings: BTreeMap<String, Ident> = BTreeMap::new();
     let mut pending: Option<Pending> = None;
     let unpaired = |pending: &Option<Pending>, errors: &mut Vec<Diagnostic>| {
         if let Some(Pending::Definition { index, name, .. }) = pending {
@@ -413,6 +462,7 @@ fn pair(program: &Program, errors: &mut Vec<Diagnostic>) -> (Vec<Paired>, Vec<Si
             ItemKind::Size { name, kind } => {
                 unpaired(&pending, errors);
                 errors.extend(name_error(&name.name, name.pos));
+                errors.extend(spelling_error(&mut spellings, name));
                 if let Some(other) = sizes.iter().find(|size| size.name == name.name) {
                     errors.push(twice(&name.name, name.pos, other.pos));
                 }
@@ -434,6 +484,7 @@ fn pair(program: &Program, errors: &mut Vec<Diagnostic>) -> (Vec<Paired>, Vec<Si
             ItemKind::Signature(sig) => {
                 unpaired(&pending, errors);
                 errors.extend(name_error(&sig.name.name, sig.name.pos));
+                errors.extend(spelling_error(&mut spellings, &sig.name));
                 pending = Some(Pending::Definition {
                     index,
                     name: sig.name.name.clone(),
@@ -571,11 +622,18 @@ fn signature_errors(sig: &Signature, params: &[Ident]) -> Vec<Diagnostic> {
             }
             for (i, param) in params.iter().enumerate() {
                 errors.extend(name_error(&param.name, param.pos));
-                if params[..i].iter().any(|other| other.name == param.name) {
-                    errors.push(Diagnostic::error(
+                let earlier = params[..i]
+                    .iter()
+                    .find(|other| other.name.eq_ignore_ascii_case(&param.name));
+                match earlier {
+                    Some(other) if other.name == param.name => errors.push(Diagnostic::error(
                         param.pos,
                         format!("the parameter `{}` is given twice", param.name),
-                    ));
+                    )),
+                    Some(other) => {
+                        errors.push(case_clash(&param.name, param.pos, &other.name, other.pos));
+                    }
+                    None => {}
                 }
             }
         }
@@ -1100,7 +1158,12 @@ impl Scope<'_> {
                             "`{name}` is a function; give it its arguments: `{}`",
                             builtin.usage()
                         ),
-                        None => format!("unknown name `{name}`"),
+                        None => match spelling_of(name, self.params, self.symbols) {
+                            Some(spelling) => {
+                                format!("unknown name `{name}`; it is written `{spelling}`")
+                            }
+                            None => format!("unknown name `{name}`"),
+                        },
                     };
                     errors.push(Diagnostic::error(expr.pos, message));
                 }
@@ -1252,10 +1315,16 @@ impl Scope<'_> {
                     return;
                 }
                 None => {
-                    errors.push(Diagnostic::error(
-                        func.pos,
-                        format!("unknown function `{}`", func.name),
-                    ));
+                    let message = match spelling_of(&func.name, self.params, self.symbols) {
+                        Some(spelling) => {
+                            format!(
+                                "unknown function `{}`; it is written `{spelling}`",
+                                func.name
+                            )
+                        }
+                        None => format!("unknown function `{}`", func.name),
+                    };
+                    errors.push(Diagnostic::error(func.pos, message));
                     return;
                 }
             }
@@ -1590,17 +1659,30 @@ impl RecurrenceCheck<'_> {
     }
 }
 
-/// Why a binding or size cannot have this name, if it cannot. The rules are those for defined
-/// names, so that exporting a binding never forces a rename.
+/// Why a binding, size or parameter cannot have this name, if it cannot. The rules are those for
+/// defined names, which ignore case (ECMA-376 Part 1 §18.17.2.5), so that exporting a binding
+/// never forces a rename: `taX2026` reads as a cell just as `tax2026` does.
 fn name_error(name: &str, pos: Pos) -> Option<Diagnostic> {
-    let problem = if Builtin::lookup(name).is_some() {
-        "is the name of a function"
+    let lower = name.to_ascii_lowercase();
+    let reserved = if Builtin::lookup(&lower).is_some() {
+        Some("function")
+    } else if is_keyword(&lower) {
+        Some("keyword")
+    } else {
+        None
+    };
+    let problem = if let Some(kind) = reserved {
+        if lower == name {
+            format!("is the name of a {kind}")
+        } else {
+            format!("is the {kind} `{lower}` in another case, and the workbook ignores case")
+        }
     } else if name.len() > 255 {
-        "is longer than the 255 characters a defined name can have"
-    } else if looks_like_cell(name) {
-        "reads as a cell reference in the workbook"
-    } else if looks_like_r1c1(name) {
-        "reads as a row or column reference in the workbook's R1C1 notation"
+        "is longer than the 255 characters a defined name can have".to_string()
+    } else if looks_like_cell(&lower) {
+        "reads as a cell reference in the workbook".to_string()
+    } else if looks_like_r1c1(&lower) {
+        "reads as a row or column reference in the workbook's R1C1 notation".to_string()
     } else {
         return None;
     };
@@ -1608,6 +1690,27 @@ fn name_error(name: &str, pos: Pos) -> Option<Diagnostic> {
         pos,
         format!("`{name}` {problem}; choose another name"),
     ))
+}
+
+/// Two names that differ only in case, which the workbook would read as one name.
+fn case_clash(name: &str, pos: Pos, other: &str, other_pos: Pos) -> Diagnostic {
+    Diagnostic::error(
+        pos,
+        format!(
+            "`{name}` differs from `{other}`, declared at {other_pos}, only in case; the \
+             workbook ignores case in names, so choose another name"
+        ),
+    )
+}
+
+/// Records the spelling of a name declared in the file, and refuses one that differs from an
+/// earlier name only in case. The same spelling twice is reported where each kind of name is
+/// collected.
+fn spelling_error(spellings: &mut BTreeMap<String, Ident>, name: &Ident) -> Option<Diagnostic> {
+    let first = spellings
+        .entry(name.name.to_ascii_lowercase())
+        .or_insert_with(|| name.clone());
+    (first.name != name.name).then(|| case_clash(&name.name, name.pos, &first.name, first.pos))
 }
 
 fn sheet_name_error(name: &str, pos: Pos) -> Option<Diagnostic> {
@@ -1722,6 +1825,34 @@ mod tests {
                 "8:1: error: `r1c1` reads as a row or column reference in the workbook's R1C1 \
                  notation; choose another name",
                 "10:1: error: `sum` is the name of a function; choose another name",
+            ]
+        );
+    }
+
+    #[test]
+    fn names_differ_in_more_than_case() {
+        assert_eq!(
+            errors(
+                "revenue_Q1 : Local\nrevenue_Q1 = 1\nrevenue_q1 : Local\nrevenue_q1 = 2\nrate : \
+                 Local\nrate = 3\nf : Lambda Number -> Number -> Number\nf x_a x_A = x_a\ng : \
+                 Lambda Number -> Number\ng rAte = rAte\ny : Local\ny = rATE + mAx 1 2\ntaX2026 : \
+                 Local\ntaX2026 = 4\nsUm : Local\nsUm = 5\ntRue : Local\ntRue = 6\n"
+            ),
+            [
+                "8:1: error: `revenue_q1` differs from `revenue_Q1`, declared at 6:1, only in \
+                 case; the workbook ignores case in names, so choose another name",
+                "18:1: error: `taX2026` reads as a cell reference in the workbook; choose another \
+                 name",
+                "20:1: error: `sUm` is the function `sum` in another case, and the workbook \
+                 ignores case; choose another name",
+                "22:1: error: `tRue` is the keyword `true` in another case, and the workbook \
+                 ignores case; choose another name",
+                "13:7: error: `x_A` differs from `x_a`, declared at 13:3, only in case; the \
+                 workbook ignores case in names, so choose another name",
+                "15:3: error: `rAte` differs from `rate`, declared at 10:1, only in case; the \
+                 workbook ignores case in names, so choose another name",
+                "17:5: error: unknown name `rATE`; it is written `rate`",
+                "17:12: error: unknown function `mAx`; it is written `max`",
             ]
         );
     }

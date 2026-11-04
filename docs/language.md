@@ -349,15 +349,20 @@ forecast = { name = 'Forecast', color = red, hidden = False, style = big }
 
 ## Case and quotes
 
-- Lower case is for every name the author makes (bindings, parameters, styles, sizes), for record
-  fields and for keywords. Names are ASCII: a letter, then letters, digits and `_`.
+- A name the author makes (a binding, parameter, style or size) starts with a lower-case letter,
+  then has letters in either case, digits and `_`, as in `revenue_Q1`. Names are ASCII. Record
+  fields and keywords are lower case.
 - Upper case is for the language's own words: roles, types and constructors, such as `Formula`,
-  `Number`, `Thin` and `True`.
+  `Number`, `Thin` and `True`. Only the first letter tells a name from a word.
 - Every name follows the rules for defined names, so that exporting a binding never forces a
   rename. A name cannot read as a cell (`tax2026`) or as R1C1 notation (`r`, `c`, `r1c1`), and
   cannot be the name of a built-in function or a keyword: `across`, `at`, `down`, `east`,
-  `else`, `from`, `if`, `left`, `north`, `right`, `seed`, `south`, `start`, `then`, `up`,
-  `west` or `yup`.
+  `else`, `false`, `from`, `if`, `left`, `north`, `right`, `seed`, `south`, `start`, `then`,
+  `true`, `up`, `west` or `yup`.
+- Defined names ignore case, so these rules do too: `taX2026` reads as a cell, and `sUm` is the
+  function `sum`. Two names that differ only in case are an error, as is a lambda's parameter
+  that differs only in case from a name in the file. A name is written the same way everywhere:
+  a use in another case is an unknown name, and the error gives its spelling.
 - Single quotes hold settings: sheet names, format codes and font names. A quote inside is
   doubled: `'Year''s end'`. Double quotes hold data: the text of a label or a value, and strings
   in formulas.

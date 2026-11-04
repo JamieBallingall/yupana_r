@@ -347,6 +347,16 @@ growth = tail revenue / lag 1 revenue - 1
     }
 
     #[test]
+    fn a_name_keeps_its_case_in_the_workbook() {
+        let source = "revenue_Q1 : Value _ at main $B$2\nrevenue_Q1 = 100\ntotal : Formula _ \
+                      revenue_Q1 down 1\ntotal = revenue_Q1 * 2\n";
+        let listing = text(source, Step::Lower);
+        for line in ["  B3     =revenue_Q1*2", "  revenue_Q1 = Main!$B$2"] {
+            assert!(listing.contains(line), "{line}\n{listing}");
+        }
+    }
+
+    #[test]
     fn ground_replaces_fixed_sizes_by_their_values() {
         let source = "s : Size Fixed\ns = 3\nbase : Formula _ [s, 1] at main D2\nbase = [100; \
                       200; 300]\nyear : Formula _ base down 1\nyear = 1 .. 5\ntotal : Formula _ \

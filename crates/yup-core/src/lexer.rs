@@ -11,7 +11,8 @@ use crate::diagnostic::{Diagnostic, Pos};
 /// One token of a `.yup` source.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Token {
-    /// A name that starts with a lower-case letter: a binding, a function or a keyword.
+    /// A name that starts with a lower-case letter: a binding, a function or a keyword. Upper
+    /// case may follow, as in `revenue_Q1`.
     Name(String),
     /// A word that starts with an upper-case letter: a role, a type or a constructor (`Formula`,
     /// `Number`, `Thin`), or a cell in A1 notation (`B2`, `$B$2`).
@@ -276,16 +277,10 @@ impl Lexer {
                 format!("`{text}` starts with `_`; a name starts with a letter"),
             ));
         }
+        // Only the first letter tells a name from a word. A name may have upper case after it,
+        // as in `revenue_Q1`; Resolve refuses two names that differ only in case.
         if text.starts_with(|c: char| c.is_ascii_uppercase() || c == '$') {
             self.push(Token::Word(text), pos);
-        } else if text.contains(|c: char| c.is_ascii_uppercase()) {
-            return Err(Diagnostic::error(
-                pos,
-                format!(
-                    "`{text}` mixes upper and lower case; names are lower case, with words \
-                     separated by `_`"
-                ),
-            ));
         } else {
             self.push(Token::Name(text), pos);
         }
@@ -702,13 +697,9 @@ mod tests {
     }
 
     #[test]
-    fn names_are_lower_case_and_words_upper() {
+    fn names_start_lower_case_and_words_upper() {
         assert_eq!(tokens("Input")[0], Token::Word("Input".to_string()));
-        assert_eq!(
-            error("fooBar"),
-            "1:1: error: `fooBar` mixes upper and lower case; names are lower case, with words \
-             separated by `_`"
-        );
+        assert_eq!(tokens("revenue_Q1")[0], name("revenue_Q1"));
     }
 
     #[test]

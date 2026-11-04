@@ -1183,8 +1183,14 @@ impl Infer<'_> {
             return Err(self.errors);
         }
 
-        // A size that no signature named takes its name from the binding that introduced it.
-        let mut taken: BTreeSet<String> = self.model.symbols.keys().cloned().collect();
+        // A size that no signature named takes its name from the binding that introduced it,
+        // differing from every other name in more than case.
+        let mut taken: BTreeSet<String> = self
+            .model
+            .symbols
+            .keys()
+            .map(|name| name.to_ascii_lowercase())
+            .collect();
         for var in &mut self.vars {
             if var.name.is_some() || var.alias.is_some() {
                 continue;
@@ -1193,11 +1199,15 @@ impl Infer<'_> {
             let base = format!("{}_n", self.model.bindings[binding].name);
             let mut name = base.clone();
             let mut suffix = 2;
-            while taken.contains(&name) || Builtin::lookup(&name).is_some() {
+            let used = |name: &str| {
+                let lower = name.to_ascii_lowercase();
+                taken.contains(&lower) || Builtin::lookup(&lower).is_some()
+            };
+            while used(&name) {
                 name = format!("{base}{suffix}");
                 suffix += 1;
             }
-            taken.insert(name.clone());
+            taken.insert(name.to_ascii_lowercase());
             var.name = Some(name);
         }
 

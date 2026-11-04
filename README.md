@@ -186,6 +186,8 @@ this: an entry it replaced says so, in italics, and the sections on 0.2 stand.
   *Replaced in 0.2: `lag` works across or down, and `seed` gives the first value.*
 - **Names** of bindings and sizes are lower case ASCII and follow the rules for defined names: not
   a cell (`tax2026`), not R1C1 (`r`, `c1`, `rc`), not a function or keyword (question 2).
+  *Replaced in 0.2: upper case may follow the first letter, and names that differ only in case
+  are an error.*
 - **The default sheet** for items before any `sheet` statement is `Sheet1` (question 18).
   *Replaced in 0.2: sheets are bindings, and there is no default sheet.*
 - **A possible `#SPILL!`** is a warning, and the workbook is still written (question 19).
@@ -336,9 +338,9 @@ forecast = { name = 'Forecast', color = red, hidden = False, style = narrow }
 
 ### Case
 
-Lower case is for every name the author makes (bindings, parameters, styles, size variables), for
-record fields and for keywords (`if`, `at`, `right`, `from`, `east`). Upper case is for every word
-the language defines as a value or a type: roles, types and constructors, such as `Formula`,
+Lower case starts every name the author makes (bindings, parameters, styles, size variables), and
+is for record fields and keywords (`if`, `at`, `right`, `from`, `east`). Upper case is for every
+word the language defines as a value or a type: roles, types and constructors, such as `Formula`,
 `Number`, `Fixed`, `Thin` and `True`. Stage 1 has no types of the author's own, so every upper-case
 word comes from a closed list, and a misspelled one can be named in the error. `true` and `false`
 become `True` and `False`.
@@ -457,6 +459,18 @@ is provisional. [docs/language.md](docs/language.md) describes 0.2 as it is buil
   both whole forms named. Every step keeps the `$` as written, Ground included, where the cells
   worked out from moves are written without it, so the roots still stand out. The examples write
   their roots with `$`. `$` anywhere else is an error.
+- **Case in names** (decided 2026-11-04). A name starts with a lower-case letter, and upper case
+  may follow, as in `revenue_Q1`: only the first letter tells a name from a word, and a letter
+  such as a column's or a quarter's often carries meaning. Bindings become the workbook's defined
+  names, which ignore case (ECMA-376 Part 1 §18.17.2.5), so two names that differ only in case are
+  an error with both named, and so is a lambda's parameter that differs only in case from a name
+  in the file. The rules for defined names are checked ignoring case: `taX2026` reads as a cell,
+  and `sUm` is the function `sum`. A name is written one way everywhere; a use in another case is
+  an unknown name, and the error gives its spelling. Names never meet the app's reserved names:
+  the standard's own begin `_xlnm.` (§18.2.5), and [MS-OI29500] restricts every name that begins
+  `_xl` (Part 1 §18.2.5, note m), where a `.yup` name begins with a letter. `History`, the sheet
+  name the app keeps for itself, is a rule for sheet names, which are a sheet's `name` and not a
+  binding's.
 - **Types are worked out** for every formula, value and local where its cells hold one type, and
   written into its signature from Infer on. Arithmetic on text is an error. `na` builds `#N/A`,
   whose type goes with any other.
@@ -787,8 +801,9 @@ Principles for easy lexing, which 0.1 and 0.2 follow:
 - Case carries meaning: bindings, functions and local variables are lower case
   (`forecast_horizon`); words at the type level start upper case (`Formula`, `Size`, `Fixed`), as in
   Haskell. A binding may not share a name with a function. Names that differ only in case are an
-  error, since defined names in the app ignore case. *0.2: record fields are lower case, and
-  constructors, `True` and `False` among them, upper case.*
+  error, since defined names in the app ignore case. *0.2: a name may have upper case after its
+  first letter (`revenue_Q1`); record fields are lower case, and constructors, `True` and `False`
+  among them, upper case.*
 - Comments start with `//`, which means nothing in the app's formulas. `--` is Haskell's, but in
   the app it is double negation, used to turn logicals into numbers; `#` is the app's spill
   operator (`A1#`) and starts its error values (`#N/A`).
