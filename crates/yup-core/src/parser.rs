@@ -314,7 +314,8 @@ impl Parser {
         let role_pos = self.pos();
         let Some(word) = self.word() else {
             return Err(self.unexpected(
-                "a role: Formula, Value, Label, Local, Lambda, Style, Sheet, Workbook or Size",
+                "a role: Formula, Value, Label, Empty, Local, Lambda, Style, Sheet, Workbook or \
+                 Size",
             ));
         };
         self.advance();
@@ -339,7 +340,7 @@ impl Parser {
                 role_pos,
                 format!(
                     "`{word}` is not a role; a signature starts with Formula, Value, Label, \
-                     Local, Lambda, Style, Sheet, Workbook or Size{hint}"
+                     Empty, Local, Lambda, Style, Sheet, Workbook or Size{hint}"
                 ),
             ));
         };
@@ -355,10 +356,8 @@ impl Parser {
     /// writes them back in one order.
     fn signature_parts(&mut self, sig: &mut Signature) -> Parsed<()> {
         let role = sig.role;
-        let has_cells = matches!(
-            role,
-            Role::Formula | Role::Value | Role::Label | Role::Local
-        );
+        let holds = matches!(role, Role::Formula | Role::Value | Role::Label);
+        let has_cells = holds || role == Role::Local;
         loop {
             let pos = self.pos();
             let word = match self.peek().clone() {
@@ -379,10 +378,10 @@ impl Parser {
                 _ => return Ok(()),
             };
             let (what, allowed) = match word.as_str() {
-                "style" => ("style", role.is_placed()),
+                "style" => ("style", holds),
                 "width" => ("width", role.is_placed()),
                 "height" => ("height", role.is_placed()),
-                "size" => ("size", has_cells),
+                "size" => ("size", has_cells || role == Role::Empty),
                 "start" => ("start", has_cells),
                 "at" => ("place", role.is_placed()),
                 _ if Direction::from_word(&word).is_some() => {
@@ -399,7 +398,7 @@ impl Parser {
             if !allowed {
                 return Err(Diagnostic::error(
                     pos,
-                    format!("a {} signature has no {what}", role.word()),
+                    format!("{} {} signature has no {what}", role.article(), role.word()),
                 ));
             }
             let given = match what {
@@ -475,6 +474,13 @@ impl Parser {
                 Some(_) => Err(Diagnostic::error(
                     pos,
                     "a label always holds Text, so its signature names no type",
+                )),
+                None => Ok(None),
+            },
+            Role::Empty => match word {
+                Some(_) => Err(Diagnostic::error(
+                    pos,
+                    "an `Empty` holds nothing, so its signature names no type",
                 )),
                 None => Ok(None),
             },
@@ -1151,8 +1157,8 @@ mod tests {
             ),
             [
                 "2:5: error: `Input` is not a role; a signature starts with Formula, Value, Label, \
-                 Local, Lambda, Style, Sheet, Workbook or Size; a cell written in the file is a \
-                 `Value`, such as `rate : Value Number style percent rate_label right 2`",
+                 Empty, Local, Lambda, Style, Sheet, Workbook or Size; a cell written in the file \
+                 is a `Value`, such as `rate : Value Number style percent rate_label right 2`",
                 "3:26: error: expected a move from `money`, such as `money down` or `money right \
                  2`; if `money` is a style, it goes after `style`, as in `style money`, found \
                  `revenue_label`",

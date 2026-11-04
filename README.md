@@ -246,6 +246,7 @@ or from where the line sits in the file.
   | `Formula` | a formula, and a defined name | yes |
   | `Value` | a value, and a defined name | yes |
   | `Label` | a text value | no |
+  | `Empty` | nothing: cells kept empty, whose columns and rows it may size | no |
   | `Local` | nothing of its own: a LET variable in each formula that uses it | yes |
   | `Lambda` | a defined name holding a LAMBDA | yes, by calling it |
   | `Style` | the look of the cells that name it | no |
@@ -450,9 +451,10 @@ is provisional. [docs/language.md](docs/language.md) describes 0.2 as it is buil
 - **The order of a signature's parts** is role, type, style, size, start and place.
   *Replaced 2026-11-04 by keywords, below.*
 - **Keywords for a signature's parts** (decided 2026-11-04). After the role and the type, each
-  part starts with a keyword: `style money`, `size [1, n]`, `start [0, 1]`, and a place, which
-  starts with `at` or with the binding it is beside. Each part says what it is, so they may come
-  in any order, and every step prints them in one: role, type, style, size, start, place.
+  part starts with a keyword: `style money`, `width 160`, `height 28`, `size [1, n]`,
+  `start [0, 1]`, and a place, which starts with `at` or with the binding it is beside. Each part
+  says what it is, so they may come in any order, and every step prints them in one: role, type,
+  style, width, height, size, start, place.
   Liberal in what it reads and strict in what it writes, as in Postel's robustness principle, but
   with no ambiguity to tolerate: every order means the same. The style is optional, so `_` for
   the default style is gone, and `style` and `size` are keywords. Keywords are plain lower-case
@@ -510,6 +512,14 @@ is provisional. [docs/language.md](docs/language.md) describes 0.2 as it is buil
   and a height on one of unknown height. Two bindings that set the same column or row must
   agree, and only a disagreement is an error: what matters is the size each column ends up with,
   not which binding says so.
+- **`Empty`** (decided 2026-11-04) is a role for cells that stay empty, so that a column or row
+  that holds nothing can still be sized: `gap : Empty width 16 horizon_label right 1`. It is a
+  signature alone, the only one besides an unknown size, and a definition below it is an error.
+  It takes a width, a height, a size and a place, and no type, style or start. Its size is
+  never worked out, so it is known when the file is written, and one cell without `size`. It
+  claims its cells, as any range does, so Check refuses anything placed over them; formulas
+  cannot use it, and other bindings may be placed beside it. The forecast example keeps a
+  narrow gap column with one on each sheet.
 - **Pixels** (decided 2026-11-04). Widths and heights are whole pixels at 100% scaling, the unit
   the app shows for both beside its own. A height converts to the file's points exactly, at 96
   pixels to 72 points. A width converts to the file's unit, digits of the default font with 5
@@ -913,10 +923,10 @@ Where 0.1 or 0.2 gives an answer, it follows in italics; [Built for 0.1](#built-
 16. **Signature and layout syntax:** the order and form of size, span, label, anchor and
     attributes in a signature; how blocks, orientation (across or down), two-dimensional blocks
     and pinned cells are written; and how an elaborated file writes spans and numeric anchors.
-    *0.2: role, type, style, size, start and place, in that order, with no label; a place is a
-    cell, `at forecast B2`, or moves from another binding; a range made with `..` is a row, and
-    `transpose` makes it a column; the elaborated form writes `[1, n]`, `start [0, 1]` and
-    `at forecast D4`.*
+    *0.2: role and type, then style, width, height, size, start and place, each after its
+    keyword and in any order, with no label; a place is a cell, `at forecast B2`, or moves from
+    another binding; a range made with `..` is a row, and `transpose` makes it a column; the
+    elaborated form writes `size [1, n]`, `start [0, 1]` and `at forecast D4`.*
 17. **Pinned cells in the surface:** written in A1, as the author sees the workbook, or as numbers
     like every elaborated form? *0.1: numbers. 0.2: A1, in the surface and the elaborated form
     alike.*

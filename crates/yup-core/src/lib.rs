@@ -678,6 +678,73 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
     }
 
     #[test]
+    fn an_empty_range_writes_nothing_and_sizes_its_columns() {
+        let source = "title : Label width 160 at main $B$2\ntitle = \"Title\"\ngap : Empty width \
+                      16 size [1, 2] title right 1\nvalue : Value gap right 1\nvalue = 5\n";
+        let grounded = text(source, Step::Ground);
+        assert!(
+            grounded.contains("gap : Empty width 16 size [1, 2] at main C2\n"),
+            "{grounded}"
+        );
+        let listing = text(source, Step::Lower);
+        for line in [
+            "  B2     \"Title\"",
+            "  E2     5",
+            "  column C  [width 16]",
+            "  column D  [width 16]",
+        ] {
+            assert!(listing.contains(line), "{line}\n{listing}");
+        }
+        assert!(
+            !listing.contains("C2") && !listing.contains("gap"),
+            "{listing}"
+        );
+    }
+
+    #[test]
+    fn an_empty_range_is_a_signature_alone_that_holds_nothing() {
+        assert_eq!(
+            errors(
+                "a : Empty Number at main B2\nb : Empty style money at main B3\nc : Empty start \
+                 [0, 1] at main B4\n",
+                Step::Parse
+            ),
+            [
+                "6:11: error: an `Empty` holds nothing, so its signature names no type",
+                "7:11: error: an Empty signature has no style",
+                "8:11: error: an Empty signature has no start",
+            ]
+        );
+        assert_eq!(
+            errors(
+                "gap : Empty at main $B$2\ngap = 1\ntotal : Formula at main $D$2\ntotal = gap + 1\n",
+                Step::Resolve
+            ),
+            [
+                "7:1: error: `gap` is an `Empty`: it holds nothing, so it has no definition",
+                "9:9: error: `gap` is an `Empty`, which holds nothing a formula can use",
+            ]
+        );
+        assert_eq!(
+            errors(
+                "n : Size Unknown\ngap : Empty size [1, n] at main $B$2\n",
+                Step::Infer
+            ),
+            [
+                "7:18: error: `gap` is an `Empty`, whose size is known when the file is written, \
+                 so it names no unknown size"
+            ]
+        );
+        assert_eq!(
+            errors(
+                "a : Label at main $B$2\na = \"A\"\ngap : Empty at main $B$2\n",
+                Step::Check
+            ),
+            ["8:1: error: `a` and `gap` would share the cell B2"]
+        );
+    }
+
+    #[test]
     fn bindings_set_the_widths_and_heights_of_their_columns_and_rows() {
         let source = "name_label : Label width 160 height 28 at main $B$2\nname_label = \
                       \"Name\"\nyear : Formula width 48 name_label right 2\nyear = 1 .. 3\ntotal : \

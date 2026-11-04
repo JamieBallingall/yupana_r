@@ -373,6 +373,11 @@ impl Lowerer<'_> {
         sheet: &mut SheetCells,
         guards: &mut Vec<Guard>,
     ) -> Result<Option<DefinedName>, Diagnostic> {
+        // An `Empty` writes nothing: its cells stay empty, and Check has kept everything else
+        // out of them.
+        if self.model.bindings[binding].role == Role::Empty {
+            return Ok(None);
+        }
         let style = self.style(binding);
         let b = &self.model.bindings[binding];
         let (row, column) = self.grounded.anchors[&binding];

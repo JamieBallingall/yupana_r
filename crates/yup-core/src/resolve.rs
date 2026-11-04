@@ -122,7 +122,10 @@ impl Model {
 
     /// A binding's definition.
     pub fn definition<'p>(&self, program: &'p Program, binding: usize) -> &'p Expr {
-        match &program.items[self.bindings[binding].definition].kind {
+        let definition = self.bindings[binding]
+            .definition
+            .expect("only an `Empty` has no definition, and nothing asks for one");
+        match &program.items[definition].kind {
             ItemKind::Definition { expr, .. } => expr,
             _ => unreachable!("a binding's definition index points at a definition"),
         }
@@ -162,8 +165,8 @@ pub struct Binding {
     pub pos: Pos,
     /// The index of the signature item.
     pub signature: usize,
-    /// The index of the definition item.
-    pub definition: usize,
+    /// The index of the definition item; an `Empty` has none.
+    pub definition: Option<usize>,
     pub role: Role,
     /// A lambda's parameters; empty for any other binding.
     pub params: Vec<String>,
@@ -205,12 +208,14 @@ enum Pending {
     },
     /// Nothing: but a definition of this unknown size below would be wrong.
     Unknown(String),
+    /// Nothing: but a definition of this `Empty` below would be wrong.
+    Empty(String),
 }
 
-/// A signature with its definition, as the first pass pairs them.
+/// A signature with its definition, as the first pass pairs them. An `Empty` has none.
 struct Paired {
     signature: usize,
-    definition: usize,
+    definition: Option<usize>,
 }
 
 /// Resolves every name in `program`.
@@ -227,8 +232,12 @@ pub fn resolve(program: &Program, inputs: &Inputs) -> Result<Model, Vec<Diagnost
         let ItemKind::Signature(sig) = &program.items[paired.signature].kind else {
             unreachable!("a pair starts with a signature");
         };
-        let ItemKind::Definition { params, .. } = &program.items[paired.definition].kind else {
-            unreachable!("a pair ends with a definition");
+        let params: &[Ident] = match paired.definition {
+            Some(definition) => match &program.items[definition].kind {
+                ItemKind::Definition { params, .. } => params,
+                _ => unreachable!("a pair ends with a definition"),
+            },
+            None => &[],
         };
         let name = sig.name.name.clone();
         if let Some(Symbol::Binding(other)) = symbols.get(&name) {
@@ -255,7 +264,7 @@ pub fn resolve(program: &Program, inputs: &Inputs) -> Result<Model, Vec<Diagnost
         symbols.insert(name.clone(), Symbol::Binding(bindings.len()));
         bindings.push(Binding {
             name,
-            pos: program.items[paired.definition].pos,
+            pos: program.items[paired.definition.unwrap_or(paired.signature)].pos,
             signature: paired.signature,
             definition: paired.definition,
             role: sig.role,
@@ -318,9 +327,9 @@ pub fn resolve(program: &Program, inputs: &Inputs) -> Result<Model, Vec<Diagnost
     let mut tables = BTreeMap::new();
     let mut table_bindings = BTreeSet::new();
     for (index, binding) in bindings.iter().enumerate() {
-        let expr = definition_of(program, binding);
         match binding.role {
             Role::Value => {
+                let expr = definition_of(program, binding);
                 if let Some((file, pos)) = csv_file(expr) {
                     table_bindings.insert(index);
                     match inputs.get(file) {
@@ -339,7 +348,7 @@ pub fn resolve(program: &Program, inputs: &Inputs) -> Result<Model, Vec<Diagnost
                     errors.extend(value_error(expr));
                 }
             }
-            Role::Label => errors.extend(label_error(expr)),
+            Role::Label => errors.extend(label_error(definition_of(program, binding))),
             _ => {}
         }
     }
@@ -423,7 +432,8 @@ fn parameter_spellings(
 ) -> Vec<Diagnostic> {
     let mut errors = Vec::new();
     for binding in bindings.iter().filter(|b| b.role == Role::Lambda) {
-        let ItemKind::Definition { params, .. } = &program.items[binding.definition].kind else {
+        let definition = binding.definition.expect("a lambda has a definition");
+        let ItemKind::Definition { params, .. } = &program.items[definition].kind else {
             unreachable!("a binding's definition index points at a definition");
         };
         for param in params {
@@ -466,7 +476,10 @@ fn signature_of<'p>(program: &'p Program, binding: &Binding) -> &'p Signature {
 }
 
 fn definition_of<'p>(program: &'p Program, binding: &Binding) -> &'p Expr {
-    match &program.items[binding.definition].kind {
+    let definition = binding
+        .definition
+        .expect("only an `Empty` has no definition, and nothing asks for one");
+    match &program.items[definition].kind {
         ItemKind::Definition { expr, .. } => expr,
         _ => unreachable!("a binding's definition index points at a definition"),
     }
@@ -522,6 +535,15 @@ fn pair(program: &Program, errors: &mut Vec<Diagnostic>) -> (Vec<Paired>, Vec<Si
                 unpaired(&pending, errors);
                 errors.extend(name_error(&sig.name.name, sig.name.pos));
                 errors.extend(spelling_error(&mut spellings, &sig.name));
+                if sig.role == Role::Empty {
+                    // An `Empty` is its signature alone: there is nothing to define.
+                    pairs.push(Paired {
+                        signature: index,
+                        definition: None,
+                    });
+                    pending = Some(Pending::Empty(sig.name.name.clone()));
+                    continue;
+                }
                 pending = Some(Pending::Definition {
                     index,
                     name: sig.name.name.clone(),
@@ -548,7 +570,7 @@ fn pair(program: &Program, errors: &mut Vec<Diagnostic>) -> (Vec<Paired>, Vec<Si
                         if matches!(program.items[signature].kind, ItemKind::Signature(_)) {
                             pairs.push(Paired {
                                 signature,
-                                definition: index,
+                                definition: Some(index),
                             });
                         }
                     }
@@ -559,6 +581,15 @@ fn pair(program: &Program, errors: &mut Vec<Diagnostic>) -> (Vec<Paired>, Vec<Si
                                 "this defines `{}`, but the signature above it is of `{expected}`; \
                                  a definition follows its own signature",
                                 name.name
+                            ),
+                        ));
+                    }
+                    Some(Pending::Empty(empty)) if empty == name.name => {
+                        errors.push(Diagnostic::error(
+                            item.pos,
+                            format!(
+                                "`{empty}` is an `Empty`: it holds nothing, so it has no \
+                                 definition"
                             ),
                         ));
                     }
@@ -594,7 +625,8 @@ fn fixed_sizes(
     sizes: &mut [SizeDecl],
     errors: &mut Vec<Diagnostic>,
 ) {
-    let paired_definitions: BTreeSet<usize> = pairs.iter().map(|pair| pair.definition).collect();
+    let paired_definitions: BTreeSet<usize> =
+        pairs.iter().filter_map(|pair| pair.definition).collect();
     for (index, item) in program.items.iter().enumerate() {
         let ItemKind::Definition { name, expr, .. } = &item.kind else {
             continue;
@@ -1056,7 +1088,7 @@ fn places(
                     symbols,
                     bindings,
                     &reference.name,
-                    &[Role::Formula, Role::Value, Role::Label],
+                    &[Role::Formula, Role::Value, Role::Label, Role::Empty],
                 ) {
                     Some(other) if other == binding => {
                         errors.push(Diagnostic::error(
@@ -1182,6 +1214,9 @@ impl Scope<'_> {
                         Role::Lambda => Some(format!(
                             "`{name}` is a lambda; give it its arguments: `{}`",
                             call_usage(binding)
+                        )),
+                        Role::Empty => Some(format!(
+                            "`{name}` is an `Empty`, which holds nothing a formula can use"
                         )),
                         Role::Label => Some(format!(
                             "`{name}` is a label, which formulas cannot use; a text a formula \
@@ -1603,11 +1638,7 @@ fn recurrence(
         seed: None,
     };
     for &binding in &members {
-        let ItemKind::Definition { expr, .. } = &program.items[bindings[binding].definition].kind
-        else {
-            unreachable!("a binding's definition index points at a definition");
-        };
-        check.check(expr)?;
+        check.check(definition_of(program, &bindings[binding]))?;
     }
     Ok(Recurrence { members, state })
 }

@@ -52,6 +52,9 @@ total = money { font = { bold = True } }
 horizon_label : Label style label width 180 at inputs $B$2
 horizon_label = "Forecast horizon (years)"
 
+// Column C stays empty: a narrow gap between the labels and the numbers.
+inputs_gap : Empty width 16 horizon_label right 1
+
 horizon : Value Number style input horizon_label right 2
 horizon = 5
 
@@ -88,6 +91,8 @@ discount rate years = 1 / (1 + rate) ^ years
 
 revenue_heading : Label style heading width 180 at forecast $B$2
 revenue_heading = "Revenue"
+
+forecast_gap : Empty width 16 revenue_heading right 1
 
 year_label : Label style label revenue_heading down
 year_label = "Year"

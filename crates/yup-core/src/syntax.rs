@@ -65,6 +65,9 @@ pub enum Role {
     Value,
     /// Text in a cell, which formulas cannot use.
     Label,
+    /// Cells that stay empty: a place that nothing else may take, whose columns and rows the
+    /// signature may size.
+    Empty,
     /// A value with no cells of its own, used by the formulas around it.
     Local,
     /// A function of its parameters: a defined name holding a LAMBDA.
@@ -84,6 +87,7 @@ impl Role {
             Role::Formula => "Formula",
             Role::Value => "Value",
             Role::Label => "Label",
+            Role::Empty => "Empty",
             Role::Local => "Local",
             Role::Lambda => "Lambda",
             Role::Style => "Style",
@@ -98,6 +102,7 @@ impl Role {
             Role::Formula,
             Role::Value,
             Role::Label,
+            Role::Empty,
             Role::Local,
             Role::Lambda,
             Role::Style,
@@ -108,9 +113,17 @@ impl Role {
         .find(|role| role.word() == word)
     }
 
-    /// Whether the binding has cells of its own, and so a style and a place.
+    /// The article that goes before the role's word: `an Empty`, `a Formula`.
+    pub fn article(self) -> &'static str {
+        if self == Role::Empty { "an" } else { "a" }
+    }
+
+    /// Whether the binding has cells of its own, and so a place.
     pub fn is_placed(self) -> bool {
-        matches!(self, Role::Formula | Role::Value | Role::Label)
+        matches!(
+            self,
+            Role::Formula | Role::Value | Role::Label | Role::Empty
+        )
     }
 }
 

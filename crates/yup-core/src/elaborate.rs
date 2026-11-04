@@ -142,14 +142,14 @@ fn sizes(program: &Program, model: &Model, typed: &Typed, shapes: &[Shape], edit
     for (index, binding) in model.bindings.iter().enumerate() {
         if !matches!(
             binding.role,
-            Role::Formula | Role::Value | Role::Label | Role::Local
+            Role::Formula | Role::Value | Role::Label | Role::Empty | Role::Local
         ) {
             continue;
         }
         let mut sig = model.signature(program, index).clone();
         let pos = sig.name.pos;
         if sig.ty.is_none()
-            && binding.role != Role::Label
+            && !matches!(binding.role, Role::Label | Role::Empty)
             && let Some(ty) = typed.types[index]
         {
             sig.ty = Some((Type::Cell(ty), pos));

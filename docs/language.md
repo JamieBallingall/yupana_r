@@ -51,6 +51,7 @@ A signature starts with the binding's role, which says what the binding becomes.
 | `Formula` | a dynamic array formula, and a defined name | yes |
 | `Value` | a value, or a table read from a CSV file, and a defined name | yes |
 | `Label` | a text cell | no |
+| `Empty` | nothing: cells kept empty, whose columns and rows it may size | no |
 | `Local` | nothing of its own: a LET variable in each formula that uses it | yes |
 | `Lambda` | a defined name holding a LAMBDA | yes, by calling it |
 | `Style` | the look of the cells whose signatures name it | no |
@@ -69,11 +70,11 @@ Every step prints them in the order of this table.
 | role | `Formula` | all |
 | type | `Number`, `Number -> Number`, `Cell` | see below |
 | style | `style money` | `Formula`, `Value`, `Label`: optional; without one, the default |
-| width | `width 160` | `Formula`, `Value`, `Label`: optional |
-| height | `height 28` | `Formula`, `Value`, `Label`: optional |
-| size | `size [1, n - 1]` | `Formula`, `Value`, `Label`, `Local`: optional, checked |
+| width | `width 160` | `Formula`, `Value`, `Label`, `Empty`: optional |
+| height | `height 28` | `Formula`, `Value`, `Label`, `Empty`: optional |
+| size | `size [1, n - 1]` | `Formula`, `Value`, `Label`, `Local`: optional, checked; `Empty` |
 | start | `start [0, 1]` | `Formula`, `Value`, `Label`, `Local`: optional, checked |
-| place | `at forecast $B$2`, `revenue down 2` | `Formula`, `Value`, `Label`: required |
+| place | `at forecast $B$2`, `revenue down 2` | `Formula`, `Value`, `Label`, `Empty`: required |
 
 The type of a cell is `Number`, `Text` or `Logical`, the kinds of value the spreadsheet app's TYPE
 function tells apart. It is optional, and checked, for `Formula`, `Value` and `Local`, and not
@@ -310,6 +311,11 @@ horizon_label : Label style label width 160 at forecast $B$2
   workbook's apply to each sheet that does not set its own, and the app's defaults to the rest.
 - A column is from 1 to 1785 pixels wide and a row from 1 to 545 pixels high: the app's limits of
   255 characters and 409 points.
+- An `Empty` sizes columns and rows that hold nothing, such as a narrow gap between labels and
+  numbers: `gap : Empty width 16 size [1, 2] horizon_label right 1`. It is a signature alone,
+  with no definition and no type or style. Its size is one cell without `size`, and is known
+  when the file is written: it may name a fixed size, but not an unknown one. Nothing else may
+  be placed over its cells, formulas cannot use it, and other bindings may be placed beside it.
 - The file counts a column's width in digits of the default font, so a width in pixels is
   exact with the default font, 11-point Calibri, whose digits are 7 pixels wide. With another, a
   column keeps its width in digits, and grows or shrinks with the font, as the app's own

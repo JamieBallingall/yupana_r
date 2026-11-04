@@ -204,8 +204,8 @@ pub fn infer(program: &Program, model: &Model) -> Result<Typed, Vec<Diagnostic>>
             None => infer.binding(binding),
         }
     }
-    // What cannot be used by a formula has a shape of its own: a label is one cell, and styles,
-    // sheets and the workbook have no cells.
+    // What cannot be used by a formula has a shape of its own: a label is one cell, an empty
+    // range is the size its signature gives, and styles, sheets and the workbook have no cells.
     for (binding, b) in model.bindings.iter().enumerate() {
         match b.role {
             Role::Label => {
@@ -216,6 +216,13 @@ pub fn infer(program: &Program, model: &Model) -> Result<Typed, Vec<Diagnostic>>
                     Err(error) => infer.errors.push(error),
                 }
                 infer.types[binding] = Some(CellType::Text);
+            }
+            Role::Empty => {
+                infer.current = binding;
+                match infer.empty_shape(model.signature(program, binding)) {
+                    Ok(shape) => infer.shapes[binding] = Some(shape),
+                    Err(error) => infer.errors.push(error),
+                }
             }
             Role::Style | Role::Sheet | Role::Workbook => {
                 infer.shapes[binding] = Some(Shape::scalar());
@@ -874,6 +881,41 @@ impl Infer<'_> {
                     shape.rows.start, shape.columns.start, from.row, from.column
                 ),
             ));
+        }
+        Ok(shape)
+    }
+
+    /// An `Empty`'s shape: the size its signature gives, or one cell. Nothing works it out, so
+    /// it is known when the file is written: it may name fixed sizes, but no unknown one.
+    fn empty_shape(&self, sig: &Signature) -> Result<Shape, Diagnostic> {
+        let mut shape = Shape::scalar();
+        let Some(written) = &sig.shape else {
+            return Ok(shape);
+        };
+        let name = &sig.name.name;
+        for (extent, syntax) in [
+            (&mut shape.rows, &written.rows),
+            (&mut shape.columns, &written.columns),
+        ] {
+            let size = self.size_of_syntax(syntax)?;
+            match self.normal(&size).as_constant() {
+                Some(count) if count >= 1 => extent.size = size,
+                Some(_) => {
+                    return Err(Diagnostic::error(
+                        written.pos,
+                        format!("`{name}` spans at least one row and one column"),
+                    ));
+                }
+                None => {
+                    return Err(Diagnostic::error(
+                        written.pos,
+                        format!(
+                            "`{name}` is an `Empty`, whose size is known when the file is \
+                             written, so it names no unknown size"
+                        ),
+                    ));
+                }
+            }
         }
         Ok(shape)
     }
