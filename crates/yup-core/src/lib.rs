@@ -561,10 +561,30 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
         let listing = text(source, Step::Lower);
         assert!(
             listing.contains(
-                "=((_xlfn.SEQUENCE(1,4)>1)*(_xlfn.SEQUENCE(1,4)<4)<>0)+NOT(_xlfn.SEQUENCE(1,4)<>2)<>0"
+                "=_xlfn.LET(_xlpm.years,_xlfn.SEQUENCE(1,4),((_xlpm.years>1)*(_xlpm.years<4)<>0)\
+                 +NOT(_xlpm.years<>2)<>0)"
             ),
             "{listing}"
         );
+    }
+
+    #[test]
+    fn a_formula_binds_the_locals_it_uses_with_let() {
+        let source = "rate : Value Number _ at main D2\nrate = 0.1\nfactor : Local\nfactor = 1 + \
+                      rate\nsquared : Local\nsquared = factor * factor\nout : Formula _ rate \
+                      down\nout = squared - factor\nf : Lambda Number -> Number\nf x = x * \
+                      factor\ng : Lambda Number -> Number\ng factor = factor + squared\nuse : \
+                      Formula _ out down\nuse = f 1 + g 2\n";
+        let listing = text(source, Step::Lower);
+        for line in [
+            "  D3     =_xlfn.LET(_xlpm.factor,1+rate,_xlpm.squared,_xlpm.factor*_xlpm.factor,\
+             _xlpm.squared-_xlpm.factor)",
+            "  f = _xlfn.LAMBDA(_xlpm.x,_xlfn.LET(_xlpm.factor,1+rate,_xlpm.x*_xlpm.factor))",
+            // A local named as a parameter is written in place, so that no LET hides the parameter.
+            "  g = _xlfn.LAMBDA(_xlpm.factor,_xlpm.factor+(1+rate)*(1+rate))",
+        ] {
+            assert!(listing.contains(line), "{line}\n{listing}");
+        }
     }
 
     #[test]

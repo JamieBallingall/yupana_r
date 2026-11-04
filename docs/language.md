@@ -51,7 +51,7 @@ A signature starts with the binding's role, which says what the binding becomes.
 | `Formula` | a dynamic array formula, and a defined name | yes |
 | `Value` | a value, or a table read from a CSV file, and a defined name | yes |
 | `Label` | a text cell | no |
-| `Local` | nothing of its own: its formula is written into those that use it | yes |
+| `Local` | nothing of its own: a LET variable in each formula that uses it | yes |
 | `Lambda` | a defined name holding a LAMBDA | yes, by calling it |
 | `Style` | the look of the cells whose signatures name it | no |
 | `Size` | nothing: a size the checker tracks | in sizes |
@@ -96,8 +96,11 @@ year = 1 .. horizon
   table of values.
 - A **label** is its text, in double quotes: `year_label = "Year"`. Formulas cannot use it.
 - A **formula** is an expression, written into the workbook as one dynamic array formula.
-- A **local** is an expression with no cells of its own. A formula that uses it has it written
-  in place.
+- A **local** is an expression with no cells of its own. A formula that uses it, directly or
+  through other locals, binds it with LET under its own name, so that it is worked out once:
+  `LET(_xlpm.growth_factor,1+revenue_growth,base_revenue*_xlpm.growth_factor^year)`. In a lambda
+  with a parameter of the same name as a local it uses, the local is written in place instead,
+  so that the LET cannot hide the parameter.
 
 An error, such as `#N/A`, is not a type: any formula may give one, and `na` gives `#N/A`.
 

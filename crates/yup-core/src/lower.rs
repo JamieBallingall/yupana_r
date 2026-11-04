@@ -7,8 +7,9 @@
 //!
 //! Every formula and value becomes a workbook-scoped defined name, and formulas refer to them by
 //! those names. The name of a spilled range refers to the whole spill, which the file writes as
-//! `_xlfn.ANCHORARRAY` of the anchor cell; the app shows it as `D3#`. A local has no name: its
-//! formula is written into each formula that uses it.
+//! `_xlfn.ANCHORARRAY` of the anchor cell; the app shows it as `D3#`. A local has no defined name:
+//! each formula that uses it, directly or through other locals, binds it with LET under its own
+//! name, so that it is worked out once and reads as it does in the file.
 //!
 //! An expression whose span is `[a, b)` lowers to a formula whose result has `b - a` positions,
 //! the first of them position `a`. That is what keeps `lag`, `tail` and `init` aligned: each is a
@@ -212,13 +213,20 @@ struct Scope<'a> {
     params: &'a [String],
     /// The recurrence one position of which this is, if any.
     position: Option<&'a Position>,
+    /// The locals a LET around the formula binds; the file writes them `_xlpm.name` too.
+    lets: &'a BTreeSet<usize>,
 }
 
-/// The whole workbook's scope: no parameters, and not inside a recurrence.
-const GLOBAL: Scope<'static> = Scope {
-    params: &[],
-    position: None,
-};
+impl<'a> Scope<'a> {
+    /// The scope of a formula with no parameters and not inside a recurrence.
+    fn global(lets: &'a BTreeSet<usize>) -> Scope<'a> {
+        Scope {
+            params: &[],
+            position: None,
+            lets,
+        }
+    }
+}
 
 /// A recurrence, as one position of it is lowered.
 struct Position {
@@ -388,7 +396,9 @@ impl Lowerer<'_> {
                 None => put(cells, (row, column), literal(expr), style),
             },
             Role::Formula => {
-                let formula = self.definition_formula(binding)?;
+                let roots = self.roots(binding);
+                let formula =
+                    self.with_lets(&roots, &[], |lets| self.definition_formula(binding, lets))?;
                 within_limits(b, &formula)?;
                 put(cells, (row, column), Value::Formula(formula.text), style);
                 let shape = &self.grounded.shapes[binding];
@@ -442,12 +452,97 @@ impl Lowerer<'_> {
         }))
     }
 
-    /// The formula for a binding's definition. A value carried from one position to the next is
-    /// worked out by a scan.
-    fn definition_formula(&self, binding: usize) -> Result<Formula, Diagnostic> {
+    /// The definitions a binding's formula is made of: its own, or, for a value carried from one
+    /// position to the next, those of every member of its cycle.
+    fn roots(&self, binding: usize) -> Vec<&Expr> {
         match self.model.recurrence_of(binding) {
-            Some(recurrence) if recurrence.state == binding => self.scan(recurrence),
-            _ => self.formula(self.model.definition(self.program, binding), GLOBAL),
+            Some(recurrence) if recurrence.state == binding => recurrence
+                .members
+                .iter()
+                .map(|&member| self.model.definition(self.program, member))
+                .collect(),
+            _ => vec![self.model.definition(self.program, binding)],
+        }
+    }
+
+    /// The locals that expressions use, directly or through other locals, each after the locals
+    /// it uses. A member of a recurrence is written in place, never bound, but what it uses is.
+    fn locals(&self, roots: &[&Expr], params: &[String]) -> Vec<usize> {
+        let mut seen = BTreeSet::new();
+        let mut stack: Vec<(&Expr, bool)> = roots.iter().map(|&root| (root, true)).collect();
+        while let Some((expr, in_root)) = stack.pop() {
+            if let ExprKind::Name(name) = &expr.kind
+                && !(in_root && params.contains(name))
+                && let Some(&Symbol::Binding(binding)) = self.model.symbols.get(name)
+                && self.model.bindings[binding].role == Role::Local
+                && seen.insert(binding)
+            {
+                let members = match self.model.recurrence_of(binding) {
+                    Some(recurrence) => recurrence.members.clone(),
+                    None => vec![binding],
+                };
+                for member in members {
+                    seen.insert(member);
+                    stack.push((self.model.definition(self.program, member), false));
+                }
+            }
+            stack.extend(expr.children().into_iter().map(|child| (child, in_root)));
+        }
+        self.model
+            .order
+            .iter()
+            .copied()
+            .filter(|binding| {
+                seen.contains(binding) && self.model.recurrence_of(*binding).is_none()
+            })
+            .collect()
+    }
+
+    /// The formula `build` gives, inside a LET that binds every local it uses. A local whose name
+    /// is also a parameter's is written in place instead, so that its LET cannot hide the
+    /// parameter.
+    fn with_lets(
+        &self,
+        roots: &[&Expr],
+        params: &[String],
+        build: impl FnOnce(&BTreeSet<usize>) -> Result<Formula, Diagnostic>,
+    ) -> Result<Formula, Diagnostic> {
+        let locals = self.locals(roots, params);
+        let clashes = locals
+            .iter()
+            .any(|&local| params.contains(&self.model.bindings[local].name));
+        if locals.is_empty() || clashes {
+            return build(&BTreeSet::new());
+        }
+        let mut bound = BTreeSet::new();
+        let mut args = Vec::with_capacity(2 * locals.len() + 1);
+        for local in locals {
+            let definition = self.model.definition(self.program, local);
+            let value = self.formula(definition, Scope::global(&bound))?;
+            args.push(Formula::atom(format!(
+                "_xlpm.{}",
+                self.model.bindings[local].name
+            )));
+            args.push(value);
+            bound.insert(local);
+        }
+        args.push(build(&bound)?);
+        Ok(call("_xlfn.LET", &args))
+    }
+
+    /// The formula for a binding's definition, with `lets` bound around it. A value carried from
+    /// one position to the next is worked out by a scan.
+    fn definition_formula(
+        &self,
+        binding: usize,
+        lets: &BTreeSet<usize>,
+    ) -> Result<Formula, Diagnostic> {
+        match self.model.recurrence_of(binding) {
+            Some(recurrence) if recurrence.state == binding => self.scan(recurrence, lets),
+            _ => self.formula(
+                self.model.definition(self.program, binding),
+                Scope::global(lets),
+            ),
         }
     }
 
@@ -455,7 +550,7 @@ impl Lowerer<'_> {
     /// starts from the value's first value; at each position it works out the value from the
     /// value a position back, with the other members of the cycle written in place, so that the
     /// workbook holds no circular reference.
-    fn scan(&self, recurrence: &Recurrence) -> Result<Formula, Diagnostic> {
+    fn scan(&self, recurrence: &Recurrence, lets: &BTreeSet<usize>) -> Result<Formula, Diagnostic> {
         let state = recurrence.state;
         let axis = self.typed.carried[&state];
         let position = Position {
@@ -475,7 +570,7 @@ impl Lowerer<'_> {
         let driver = definitions()
             .find_map(|definition| find(definition, self.typed.drivers[&state]))
             .expect("Infer finds the part the scan runs over");
-        let driver = self.formula(driver, GLOBAL)?;
+        let driver = self.formula(driver, Scope::global(lets))?;
         let positions = match axis {
             Axis::Across => call(
                 "_xlfn.SEQUENCE",
@@ -486,6 +581,7 @@ impl Lowerer<'_> {
         let scope = Scope {
             params: &[],
             position: Some(&position),
+            lets,
         };
         let body = self.formula(self.model.definition(self.program, state), scope)?;
         let step = call(
@@ -498,7 +594,7 @@ impl Lowerer<'_> {
         );
         Ok(call(
             "_xlfn.SCAN",
-            &[self.formula(first, GLOBAL)?, positions, step],
+            &[self.formula(first, Scope::global(lets))?, positions, step],
         ))
     }
 
@@ -539,11 +635,15 @@ impl Lowerer<'_> {
     /// name in the workbook as well as in the file.
     fn function(&self, binding: usize) -> Result<DefinedName, Diagnostic> {
         let b = &self.model.bindings[binding];
-        let scope = Scope {
-            params: &b.params,
-            position: None,
-        };
-        let body = self.formula(self.model.definition(self.program, binding), scope)?;
+        let definition = self.model.definition(self.program, binding);
+        let body = self.with_lets(&[definition], &b.params, |lets| {
+            let scope = Scope {
+                params: &b.params,
+                position: None,
+                lets,
+            };
+            self.formula(definition, scope)
+        })?;
         let mut args: Vec<Formula> = b
             .params
             .iter()
@@ -637,10 +737,13 @@ impl Lowerer<'_> {
                 {
                     self.formula(self.model.definition(self.program, *binding), scope)?
                 }
+                Some(Symbol::Binding(binding)) if scope.lets.contains(binding) => {
+                    Formula::atom(format!("_xlpm.{name}"))
+                }
                 Some(Symbol::Binding(binding))
                     if self.model.bindings[*binding].role == Role::Local =>
                 {
-                    self.definition_formula(*binding)?
+                    self.definition_formula(*binding, scope.lets)?
                 }
                 Some(Symbol::Binding(_)) => Formula::atom(name),
                 Some(Symbol::Size(var)) => Formula::atom(

@@ -443,6 +443,11 @@ is provisional. [docs/language.md](docs/language.md) describes 0.2 as it is buil
   sheet.
 - **Empty columns.** A column that nothing is in, before the last column that something is in,
   is narrow, as a gap; a range of unknown width counts as being in every column from its first.
+- **Locals are LET variables** (question 13). A formula binds each local it uses, directly or
+  through other locals, with LET under the local's own name, in the order they depend on each
+  other, so that each is worked out once and the formula reads as the file does. A member of a
+  carried cycle is still written in place, inside the scan, and a lambda with a parameter named
+  as one of its locals writes that local in place, so that no LET hides the parameter.
 - **The default font** stays as in 0.1, the typeface and size of the standard's own examples, and
   the workbook's style changes it.
 - **Error messages** name what to write instead where the mistake is a habit from the
@@ -779,7 +784,8 @@ Where 0.1 or 0.2 gives an answer, it follows in italics; [Built for 0.1](#built-
 12. **Names:** of the project and its crates.
 13. **Exporting bindings:** whether a shown binding can stay unexported, and whether a local one
     becomes a LET variable rather than being repeated. *0.1: every shown binding is a defined
-    name, formulas use those names, and a local binding is written where it is used.*
+    name, formulas use those names, and a local binding is written where it is used. 0.2: a
+    local is a LET variable in each formula that uses it.*
 14. **Fixed sizes:** does a range of `Fixed` size spill, or is it filled with one formula per cell?
     *0.1: everything spills.*
 15. **Recurrences under spill:** the rewrite into SCAN or REDUCE, and what to do with coupled
