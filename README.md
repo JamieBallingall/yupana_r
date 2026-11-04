@@ -123,16 +123,16 @@ per member of a set of unknown size (it becomes one two-dimensional range instea
   lex.
 - The core syntax is S3, like Haskell or ML, decided on 2026-11-03. See [Core syntax](#core-syntax).
 - Formulas are given range by range. The tool infers every range's size and does the layout.
-- Each binding is a pair of lines: a signature (`name : …`), which carries the label and, later,
-  formatting and type information, and a definition (`name = …`).
+- Each binding is a pair of lines: a signature (`name : …`), which carries its role, type, style
+  and place, and a definition (`name = …`).
 - Sizes are tracked through the model with size variables, and positions along them with spans.
   See [The range model](#the-range-model).
 - The work is done in eight named steps, and every step up to Check can print its result as a valid
   `.yup`. See [The pipeline](#the-pipeline).
-- Sheets are opened by `sheet` statements, and formulas never name a sheet.
+- Sheets are bindings, and formulas never name a sheet.
 - A `.yup` binding names a range or a function. An exported binding becomes a workbook-scoped
   defined name, LAMBDAs included; any other binding may be eliminated when the workbook is written.
-- Binding names are ASCII. Labels and sheet names can be any Unicode, in single quotes.
+- Binding names are ASCII. Text and sheet names can be any Unicode.
 - Comments start with `//`.
 - Operators are preferred to function calls where they read well, such as `1 .. n` for a sequence.
 - Inputs come both inline, as literals, and from CSV or JSON files.
@@ -197,10 +197,10 @@ provisional, and names the open question it answers where there is one.
 
 ## Decided for 0.2
 
-Decided on 2026-11-03, in discussion, after trying 0.1. None of it is built yet: the code and
-[docs/language.md](docs/language.md) still describe 0.1. Where this section and
+Decided on 2026-11-03, in discussion, after trying 0.1. Where this section and
 [Built for 0.1](#built-for-01) disagree, this section stands. Its aim is that nothing about a
-binding is left implicit, so an LLM never has to infer what a line means from what it leaves out.
+binding is left implicit, so an LLM never has to infer what a line means from what it leaves out,
+or from where the line sits in the file.
 
 ### Bindings
 
@@ -210,17 +210,45 @@ binding is left implicit, so an LLM never has to infer what a line means from wh
   alone where there is nothing to define, as `n : Size Unknown` does.
 
   ```text
-  revenue : Formula money 'Revenue'
-  revenue = base_revenue * growth_factor ^ year
+  revenue : Formula Number money revenue_label right 2
+  revenue = base * (1 + rate) ^ year
   ```
 
-- **A signature starts with its role,** one word from a closed set: `Input`, `Formula`, `Local`,
-  `Lambda`, `Style` and `Size`. In 0.1 a binding's role follows from whether its signature has a
-  label, so deleting a label silently turns a shown row into a local one; a stated role cannot
-  drift like that.
-- **A type follows the role.** It is required for `Lambda` and `Style`, and optional but checked
-  for the others (`Formula Number`). `Number` says what each cell holds, not the shape of the
-  range: a lambda's sizes are still worked out at each call.
+- **The order of bindings in a file means nothing.** Two graphs are built from a file: the
+  formulas' graph from the `=` lines, and the layout's graph from the `:` lines. Each is checked
+  for cycles on its own (a balance carried from one period to the next is the formulas' one
+  allowed cycle). The two are often alike, but need not be.
+- **A signature starts with its role,** one word from a closed set. In 0.1 a binding's role
+  follows from whether its signature has a label, so deleting a label silently turns a shown row
+  into a local one; a stated role cannot drift like that.
+
+  | Role | In the workbook | Formulas may use it |
+  |---|---|---|
+  | `Formula` | a formula, and a defined name | yes |
+  | `Value` | a value, and a defined name | yes |
+  | `Label` | a text value | no |
+  | `Local` | nothing of its own: a LET variable in each formula that uses it | yes |
+  | `Lambda` | a defined name holding a LAMBDA | yes, by calling it |
+  | `Style` | the look of the cells that name it | no |
+  | `Size` | nothing: a size the checker tracks | in sizes |
+  | `Sheet` | a worksheet | no |
+  | `Workbook` | the workbook's own settings; exactly one per file | no |
+
+- **A type follows the role.** The types of a cell are those of the app's TYPE function that
+  concern a single value: `Number`, `Text` and `Logical`. An error is not a type: any formula may
+  give one, and `na` gives `#N/A`. The type is required for `Lambda` and `Style`, optional but
+  checked for `Formula`, `Value` and `Local`, and not written for `Label` (always `Text`),
+  `Sheet` and `Workbook`. A type says what each cell holds, not the shape of the range.
+- **A `Value` holds one number, string or logical.** Lists are not allowed: bulk values belong in
+  input files, and an error value is made by a formula. Provisionally, a `Value` may instead be a
+  table read from a CSV file, `csv "history.csv"`: many cells, each column typed from the file,
+  and only the values written, not the row of column names.
+- **There are no labels in signatures.** A label documenting a range is a `Label` binding of its
+  own, a text cell like any other, placed beside the range. Headings are labels too. Generating
+  labels from formulas, for concision, may come later.
+- **A signature's parts come in a fixed order:** role, type, style, then size, start and
+  placement. `Formula`, `Value` and `Label` always name a style, or `_` for the default. A
+  signature's start is written `start [0, 1]`, so that `from` is left to placement.
 - **A lambda** has a curried type and its parameters on the left of its definition. Every call
   supplies every argument, and the checker counts them. Partial application is written as an
   explicit lambda for now; compiling it into a LAMBDA may come later.
@@ -230,23 +258,77 @@ binding is left implicit, so an LLM never has to infer what a line means from wh
   discount rate years = 1 / (1 + rate) ^ years
   ```
 
-- **An `Input` or a `Formula` names a style and a label,** in that order, after the role and the
-  type. Both are always written, and `_` stands for the default: the app's default style, or no
-  label. A `Local` has neither, and either one there is an error. Formatting lives only in styles,
-  so `Bold`, `Italic` and `Format` leave signatures.
-- **Labels stay in single quotes,** with a quote inside doubled: `'Prior year''s revenue'`.
+- **`lag 1 x seed v`** gives the first value of a lag, in place of 0.1's `from`.
+
+### Layout
+
+Each `Formula`, `Value` and `Label` says where it goes, in its signature: either at a cell, or
+beside another binding. The sheet a binding is on is the sheet of the binding its placements lead
+back to. 0.1 placed items in the order of the file; with that order gone, the reason
+[Options considered and set aside](#options-considered-and-set-aside) gives against relative
+placement no longer holds.
+
+```text
+horizon_label : Label label at forecast B2
+horizon       : Value Number _ horizon_label right 2
+base_label    : Label label horizon_label down
+revenue       : Formula Number money revenue_label right 2
+growth        : Formula Number percent revenue down 1 right 1 from west
+```
+
+- **A root** is placed with `at`, a sheet and a cell in A1 notation: `at forecast B2`. Each sheet
+  has at least one root.
+- **A move** is `left`, `right`, `up` or `down`, with a distance that defaults to 1. A placement
+  has at most one move along each axis, and their order does not matter.
+- **Each move counts in cells from the reference's cell on the side it heads toward:** `right`
+  from its east column, `left` from its west, `down` from its south row and `up` from its north.
+  `from` after a move names another side: `east`, `west`, `north` or `south`. Along an axis with
+  no move, the binding lines up with the reference's west column or north row. So `right 2` from
+  a one-cell label skips a column, and `down 1 right 1 from west` is one row below and one column
+  in from the reference's first column.
+- **Only counting from the east or south side needs the reference's extent,** and that extent must
+  be known when the file is written. Counting past an unknown extent is an error that names the
+  size.
+- **Alignment is checked, not done.** When two ranges placed one from the other share a size
+  variable along an axis, position *k* of one should line up with position *k* of the other. A
+  placement that does not is a warning: a flag turning warnings into errors may come later.
+- Every `Formula`, `Value` and `Label` is placed exactly once, two bindings sharing a cell is an
+  error, and a possible `#SPILL!` is a warning, as in 0.1.
+
+### Sheets and the workbook
+
+Sheets and the workbook are bindings, whose definitions are records of settings:
+
+```text
+workbook : Workbook
+workbook = { sheets = [inputs, forecast], style = base }
+
+forecast : Sheet
+forecast = { name = 'Forecast', color = red, hidden = False, style = narrow }
+```
+
+- `Workbook` has `sheets`, the sheets in the order of their tabs, and `style`. There is exactly one
+  per file, at least one sheet, and at least one sheet that is not hidden. There is no default
+  sheet.
+- `Sheet` has `name`, which follows the app's rules for sheet names, `color` (its tab's color),
+  `hidden` and `style`.
+- **Styles cascade, for the font's name and size only.** A field a cell's style leaves out comes
+  from its sheet's style, then from the workbook's, then from the app's default; a field that is
+  set wins. The cascade fills gaps, where an update only adds. Any other field in a sheet's or the
+  workbook's style is an error.
 
 ### Case
 
-Lower case is for every name the author makes (bindings, parameters, styles, size variables) and
-for record fields. Upper case is for every word the language defines: roles, types and
-constructors, such as `Formula`, `Number`, `Fixed`, `Thin` and `True`. Stage 1 has no types of the
-author's own, so every upper-case word comes from a closed list, and a misspelled one can be named
-in the error. `true` and `false` become `True` and `False`.
+Lower case is for every name the author makes (bindings, parameters, styles, size variables), for
+record fields and for keywords (`if`, `at`, `right`, `from`, `east`). Upper case is for every word
+the language defines as a value or a type: roles, types and constructors, such as `Formula`,
+`Number`, `Fixed`, `Thin` and `True`. Stage 1 has no types of the author's own, so every upper-case
+word comes from a closed list, and a misspelled one can be named in the error. `true` and `false`
+become `True` and `False`.
 
 ### Styles
 
-Nothing is styled implicitly: an input is blue only if its style says so. A style is a binding
+Nothing is styled implicitly: a value is blue only if its style says so. A style is a binding
 whose role is `Style` and whose type is a record type. Records are strict: a comma between each
 pair of fields, whitespace ignored, and a field that the type does not have is an error.
 
@@ -290,8 +372,9 @@ grand_total = money
   ECMA-376 Part 1 §18.8 and the simple types of §18.18 before they are built.
 - **There is no built-in palette.** Colors are styles of type `Color` defined in the file. Sharing
   one palette between files waits for a way to import one file into another.
-- **Single quotes** hold text that appears in the workbook outside formulas: labels, sheet names,
-  format codes and font names. Double quotes hold string values inside formulas.
+- **Single quotes hold settings and double quotes hold data.** Sheet names, format codes and font
+  names go in single quotes; the text of a `Label`, a `Value` or a string in a formula goes in
+  double quotes. The format code for text is `'@'`.
 - **Out of scope:** underline, strikethrough, diagonal borders and cell protection. A column's
   width belongs to the column, not to a cell's style; the tool sets widths, as in 0.1.
 
@@ -303,12 +386,31 @@ first token is `{` continues the statement above it, so a record can start on th
 would otherwise be valid. An explicit marker at the end of a line was set aside: `...` is a range
 in other languages and looks like `..`, and `\` is easily forgotten and looks like a lambda.
 
+### Beyond financial models
+
+Stage 1 began with financial models, and some of 0.1 assumed them: a timeline is always a row,
+and `lag`, `tail`, `init` and carried balances always work along columns. In 0.2 a range made
+with `..` and those functions work in either direction, and messages speak of positions, not
+periods. How that is written is recorded in [Built for 0.2](#built-for-02).
+
+### The fully elaborated form
+
+After Ground, `yup show` prints a file with nothing left to work out: every binding's type, size
+and start, and every placement as `at sheet CELL`. Style names stay names, and fixed sizes are
+replaced by their values. Running the pipeline on it gives it back unchanged.
+
 ### Still open for 0.2
 
-- The order of the rest of a signature: size, start and anchor.
 - The full lists of values for borders and alignment, and the combinations of alignment the
   format allows, such as which horizontal alignments take an indent.
 - The syntax of an explicit lambda inside an expression.
+- Whether a CSV table gets a role of its own, `Table`, rather than being a kind of `Value`.
+- A flag that turns warnings into errors.
+
+## Built for 0.2
+
+Decided while building 0.2, from 2026-11-03, where the decisions above left something open. Each
+is provisional.
 
 ## The range model
 
