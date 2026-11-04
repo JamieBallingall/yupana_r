@@ -108,8 +108,9 @@ const VERTICAL: &[(&str, &str)] = &[("Top", "top"), ("Center", "center"), ("Bott
 /// §18.4.11, note c).
 const MAX_POINTS: f64 = 409.55;
 /// The deepest indent, in steps of three spaces. The standard asks only for a whole number
-/// (§18.8.1), so this is a conservative bound, kept until a published source gives another.
-const MAX_INDENT: i64 = 250;
+/// (§18.8.1), and the spreadsheet app takes one of at most 255 ([MS-OI29500], Part 1 §18.8.1,
+/// note b).
+const MAX_INDENT: i64 = 255;
 /// The longest a font's name can be, in characters (§18.8.29).
 const MAX_FONT_NAME: usize = 31;
 
@@ -797,6 +798,21 @@ mod tests {
             evaluate("cell_a = { font = { size = 409.6 } }\n", "cell_a"),
             Err(vec![
                 "2:28: error: a font's size is from 1 to 409.55 points".to_string()
+            ])
+        );
+        let deepest = evaluate(
+            "cell_a = { align = { horizontal = Left, indent = 255 } }\n",
+            "cell_a",
+        )
+        .expect("the deepest indent is allowed");
+        assert_eq!(deepest.align.indent, Some(255));
+        assert_eq!(
+            evaluate(
+                "cell_a = { align = { horizontal = Left, indent = 256 } }\n",
+                "cell_a"
+            ),
+            Err(vec![
+                "2:50: error: a whole number from 0 to 255 is needed here".to_string()
             ])
         );
         let centered = evaluate(

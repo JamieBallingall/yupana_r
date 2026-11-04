@@ -380,7 +380,9 @@ grand_total = money
   indent goes only with a horizontal alignment of left or right (§18.8.1). A font's size is from
   1 to 409.55 points: the standard asks only for a positive size (§18.4.11), and [MS-OI29500]
   gives the spreadsheet app's range (Part 1 §18.4.11, note c). The app keeps a size in
-  twentieths of a point (note b), so it may round one between them; `.yup` allows any.
+  twentieths of a point (note b), so it may round one between them; `.yup` allows any. An indent
+  is at most 255: the standard asks only for a whole number (§18.8.1), and [MS-OI29500] gives
+  the app's limit (Part 1 §18.8.1, note b).
 - **There is no built-in palette.** Colors are styles of type `Color` defined in the file. Sharing
   one palette between files waits for a way to import one file into another.
 - **Single quotes hold settings and double quotes hold data.** Sheet names, format codes and font
@@ -412,8 +414,6 @@ replaced by their values. Running the pipeline on it gives it back unchanged.
 
 ### Still open for 0.2
 
-- The deepest indent. The standard asks only for a whole number (§18.8.1); 0.2 keeps to at most
-  250, as a conservative bound, until a published source gives another.
 - The other values the standard allows and `.yup` does not offer yet: more weights of line (such
   as `mediumDashed`), and the alignments `general`, `fill`, `centerContinuous` and `distributed`.
 - The syntax of an explicit lambda inside an expression.

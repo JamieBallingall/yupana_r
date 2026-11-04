@@ -321,7 +321,7 @@ The types of style, and their fields:
   adds: setting a field that the base has already set, at any depth, is an error.
 - A formula, value or label names a style of type `Cell`, or `_` for the default.
 - A font's name has at most 31 characters, and its size is from 1 to 409.55 points; the app keeps
-  a size in twentieths of a point, so it may round one between them. An indent is at most 250,
+  a size in twentieths of a point, so it may round one between them. An indent is at most 255,
   and goes only with a horizontal alignment of `Left` or `Right`.
 - A format code is checked conservatively: literal text in it goes in double quotes, and the
   format for text is `'@'`.
