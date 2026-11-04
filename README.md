@@ -195,6 +195,121 @@ provisional, and names the open question it answers where there is one.
   always gives the same bytes (questions 9 and 23).
 - **Unnamed unknown sizes** are called after the binding that introduced them, such as `year_n`.
 
+## Decided for 0.2
+
+Decided on 2026-11-03, in discussion, after trying 0.1. None of it is built yet: the code and
+[docs/language.md](docs/language.md) still describe 0.1. Where this section and
+[Built for 0.1](#built-for-01) disagree, this section stands. Its aim is that nothing about a
+binding is left implicit, so an LLM never has to infer what a line means from what it leaves out.
+
+### Bindings
+
+- **A binding is a signature, then a definition,** as in Haskell. The name is written on both
+  lines, and a definition whose name differs from the signature directly above it is an error.
+  Every `=` has its signature directly above it, with only comments between. A signature may stand
+  alone where there is nothing to define, as `n : Size Unknown` does.
+
+  ```text
+  revenue : Formula money 'Revenue'
+  revenue = base_revenue * growth_factor ^ year
+  ```
+
+- **A signature starts with its role,** one word from a closed set: `Input`, `Formula`, `Local`,
+  `Lambda`, `Style` and `Size`. In 0.1 a binding's role follows from whether its signature has a
+  label, so deleting a label silently turns a shown row into a local one; a stated role cannot
+  drift like that.
+- **A type follows the role.** It is required for `Lambda` and `Style`, and optional but checked
+  for the others (`Formula Number`). `Number` says what each cell holds, not the shape of the
+  range: a lambda's sizes are still worked out at each call.
+- **A lambda** has a curried type and its parameters on the left of its definition. Every call
+  supplies every argument, and the checker counts them. Partial application is written as an
+  explicit lambda for now; compiling it into a LAMBDA may come later.
+
+  ```text
+  discount : Lambda Number -> Number -> Number
+  discount rate years = 1 / (1 + rate) ^ years
+  ```
+
+- **An `Input` or a `Formula` names a style and a label,** in that order, after the role and the
+  type. Both are always written, and `_` stands for the default: the app's default style, or no
+  label. A `Local` has neither, and either one there is an error. Formatting lives only in styles,
+  so `Bold`, `Italic` and `Format` leave signatures.
+- **Labels stay in single quotes,** with a quote inside doubled: `'Prior year''s revenue'`.
+
+### Case
+
+Lower case is for every name the author makes (bindings, parameters, styles, size variables) and
+for record fields. Upper case is for every word the language defines: roles, types and
+constructors, such as `Formula`, `Number`, `Fixed`, `Thin` and `True`. Stage 1 has no types of the
+author's own, so every upper-case word comes from a closed list, and a misspelled one can be named
+in the error. `true` and `false` become `True` and `False`.
+
+### Styles
+
+Nothing is styled implicitly: an input is blue only if its style says so. A style is a binding
+whose role is `Style` and whose type is a record type. Records are strict: a comma between each
+pair of fields, whitespace ignored, and a field that the type does not have is an error.
+
+```text
+light_grey : Style Color
+light_grey = { red = 200, green = 200, blue = 200 }
+
+money : Style Cell
+money = { format = '#,##0;(#,##0)' }
+
+one_above_two_below : Style Border
+one_above_two_below =
+  { top    = { weight = Thin,   color = light_grey }
+  , bottom = { weight = Double, color = light_grey }
+  }
+
+grand_total : Style Cell
+grand_total = money
+  { font   = { bold = True }
+  , border = one_above_two_below
+  }
+```
+
+- **One style builds on another** by update, `money { … }`. An update merges field by field at
+  every depth, and only adds: setting a field that already has a value, at any depth, is an error.
+  So a base style can set a bottom edge and a variation add a top one, but no variation can
+  change the base's bottom edge.
+- **The record types,** and their fields:
+  - `Cell`: `format` (a format code), `font` (a `Font`), `fill` (a `Color`), `border` (a
+    `Border`) and `align` (an `Alignment`).
+  - `Font`: `name` (`'Arial'`), `size` (in points), `bold` and `italic` (`True` or `False`), and
+    `color` (a `Color`).
+  - `Border`: `top`, `bottom`, `left` and `right`, each an `Edge`.
+  - `Edge`: `weight` (`Thin`, `Medium`, `Thick`, `Double`, `Hair`, `Dotted` or `Dashed`) and
+    `color` (a `Color`).
+  - `Alignment`: `horizontal` (`Left`, `Center`, `Right` or `Justify`), `vertical` (`Top`,
+    `Center` or `Bottom`), `wrap` (`True` or `False`) and `indent` (a whole number).
+  - `Color`: `red`, `green` and `blue`, each a whole number from 0 to 255.
+
+  A field left out takes the app's default. The lists of values are to be checked against
+  ECMA-376 Part 1 §18.8 and the simple types of §18.18 before they are built.
+- **There is no built-in palette.** Colors are styles of type `Color` defined in the file. Sharing
+  one palette between files waits for a way to import one file into another.
+- **Single quotes** hold text that appears in the workbook outside formulas: labels, sheet names,
+  format codes and font names. Double quotes hold string values inside formulas.
+- **Out of scope:** underline, strikethrough, diagonal borders and cell protection. A column's
+  width belongs to the column, not to a cell's style; the tool sets widths, as in 0.1.
+
+### Statements over several lines
+
+Inside `(`, `[` or `{` a newline does not end a statement, as in 0.1. In addition, a line whose
+first token is `{` continues the statement above it, so a record can start on the line after
+`money` or `=`. No statement starts with `{`, so the rule changes the meaning of nothing that
+would otherwise be valid. An explicit marker at the end of a line was set aside: `...` is a range
+in other languages and looks like `..`, and `\` is easily forgotten and looks like a lambda.
+
+### Still open for 0.2
+
+- The order of the rest of a signature: size, start and anchor.
+- The full lists of values for borders and alignment, and the combinations of alignment the
+  format allows, such as which horizontal alignments take an indent.
+- The syntax of an explicit lambda inside an expression.
+
 ## The range model
 
 ### Sizes
@@ -453,7 +568,7 @@ Under S3 these need settling:
   a zero.
 - **Partial application.** The app's LAMBDA is not curried. The simplest rule is that every call is
   saturated and the checker checks arity; the alternative is to compile partial application into a
-  LAMBDA.
+  LAMBDA. *0.2: every call is saturated, for now.*
 - **Operators.** `=` binds, so equality needs another spelling (`==`, with `/=` or `!=`).
   Concatenation needs a spelling. Precedence is `.yup`'s own: the writer adds parentheses so that
   the app's quirks cannot change the meaning (`-2^2` is 4 in the app).
@@ -469,7 +584,8 @@ Principles for easy lexing, proposed:
 - Case carries meaning: bindings, functions and local variables are lower case
   (`forecast_horizon`); words at the type level start upper case (`Input`, `Size`, `Fixed`), as in
   Haskell. A binding may not share a name with a function. Names that differ only in case are an
-  error, since defined names in the app ignore case.
+  error, since defined names in the app ignore case. *0.2: record fields are lower case, and
+  constructors, `True` and `False` among them, upper case.*
 - Comments start with `//`, which means nothing in the app's formulas. `--` is Haskell's, but in
   the app it is double negation, used to turn logicals into numbers; `#` is the app's spill
   operator (`A1#`) and starts its error values (`#N/A`).
@@ -482,7 +598,6 @@ Principles for easy lexing, proposed:
 - **Core syntax S1 and S2,** and **S-expressions.** See [Core syntax](#core-syntax) for S1 and S2.
   S-expressions have the simplest grammar of all, but they put every formula in nested
   parentheses, which LLMs miscount, and spreadsheet formulas written that way are unfamiliar.
-
 - **Extent per range** (fill with an explicit extent, spill with the extent inferred, the row
   model, or a choice per range). Replaced by size variables, which infer extents and make the
   choice between fill and spill follow from the size.
@@ -495,8 +610,8 @@ Principles for easy lexing, proposed:
 
 ## Other open questions
 
-Where 0.1 gives a provisional answer, it follows in italics; [Built for 0.1](#built-for-01) has the
-reasons.
+Where 0.1 or 0.2 gives an answer, it follows in italics; [Built for 0.1](#built-for-01) and
+[Decided for 0.2](#decided-for-02) have the reasons.
 
 1. **The lag operator:** the seed for a lag of more than one, and the direction for a
    two-dimensional range. *0.1: along columns; `from` with `lag 1` only.*
@@ -510,9 +625,10 @@ reasons.
    in the workbook.*
 5. **Dates:** a literal syntax, written as serial numbers in the 1900 date system.
 6. **Logicals and errors:** whether error literals exist, and how `and`, `or` and `not` are
-   written. *0.1: `true` and `false`, and `&&`, `||` and `not`.*
+   written. *0.1: `true` and `false`, and `&&`, `||` and `not`. 0.2: `True` and `False`.*
 7. **Formatting syntax:** inline on each range, named styles applied to ranges, or both, and the
-   defaults. *0.1: inline, `Format "…"`, `Bold` and `Italic` in the signature.*
+   defaults. *0.1: inline, `Format "…"`, `Bold` and `Italic` in the signature. 0.2: named styles
+   only, as records, with the app's defaults for anything a style leaves out.*
 8. **Validity without the app:** schema validation in the tests and reading by independent
    readers. Opening files in the spreadsheet app itself is a check made outside this repository.
    *0.1: the tests check that every part is well formed and listed, and that the zip reads back.*
@@ -533,7 +649,8 @@ reasons.
 16. **Signature and layout syntax:** the order and form of size, span, label, anchor and
     attributes in a signature; how blocks, orientation (across or down), two-dimensional blocks
     and pinned cells are written; and how an elaborated file writes spans and numeric anchors.
-    *0.1: see [docs/language.md](docs/language.md).*
+    *0.1: see [docs/language.md](docs/language.md). 0.2: a signature starts with its role, type,
+    style and label, in that order; the order of the rest is open.*
 17. **Pinned cells in the surface:** written in A1, as the author sees the workbook, or as numbers
     like every elaborated form? *0.1: numbers.*
 18. **A file with no `sheet` statement:** a default sheet, or an error? *0.1: a sheet called
