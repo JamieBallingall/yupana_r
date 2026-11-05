@@ -678,6 +678,35 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
     }
 
     #[test]
+    fn cash_flows_are_discounted_as_the_app_does() {
+        let source = "flows : Formula at main $B$2\nflows = [-100, 30, 40, 50]\ndates : Formula \
+                      flows down 1\ndates = date_of 2026 [1, 4, 7, 10] 1\nvalue : Formula dates \
+                      down 1\nvalue = npv 0.1 flows\nrate : Formula value down 1\nrate = irr \
+                      flows\ndated : Formula rate down 1\ndated = xnpv 0.1 dates flows\n\
+                      dated_rate : Formula dated down 1\ndated_rate = xirr dates flows\n";
+        let listing = text(source, Step::Lower);
+        for line in [
+            "  B4     =NPV(0.1,flows)",
+            "  B5     =IRR(flows)",
+            "  B6     =XNPV(0.1,flows,dates)",
+            "  B7     =XIRR(flows,dates)",
+        ] {
+            assert!(listing.contains(line), "{line}\n{listing}");
+        }
+        assert_eq!(
+            errors(
+                "flows : Formula at main $B$2\nflows = [-100, 30, 40]\nworth : Formula flows \
+                 down 1\nworth = xnpv 0.1 [1, 2] flows\n",
+                Step::Infer
+            ),
+            [
+                "9:9: error: the two arguments of `xnpv` have different numbers of columns: 2 and \
+                 3"
+            ]
+        );
+    }
+
+    #[test]
     fn first_and_last_take_positions_that_stand_alone() {
         let source = "row : Formula at main $D$2\nrow = 1 .. 4\nopening : Formula row down 1\n\
                       opening = first 2 row\nclosing : Formula \

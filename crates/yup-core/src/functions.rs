@@ -35,6 +35,7 @@ pub enum Builtin {
     FloorTo,
     IfError,
     Init,
+    Irr,
     Lag,
     Last,
     Ln,
@@ -48,6 +49,7 @@ pub enum Builtin {
     MonthOf,
     Na,
     Not,
+    Npv,
     Round,
     RoundAway,
     RoundTo,
@@ -61,6 +63,8 @@ pub enum Builtin {
     Transpose,
     Trim,
     Upper,
+    Xirr,
+    Xnpv,
     Xor,
     YearOf,
 }
@@ -336,6 +340,17 @@ const TABLE: &[Entry] = &[
         gives: Gives::Like(0),
         app: None,
     },
+    // The rate that makes the cash flows' NPV nil, found by trying rates in turn, so it may give
+    // #NUM! where none is found.
+    Entry {
+        name: "irr",
+        builtin: Builtin::Irr,
+        usage: "irr cash_flows",
+        takes: &[NUMBER],
+        kind: Kind::Reduce { fixed: 0 },
+        gives: Gives::Always(CellType::Number),
+        app: app("IRR", &[0]),
+    },
     Entry {
         name: "lag",
         builtin: Builtin::Lag,
@@ -407,6 +422,17 @@ const TABLE: &[Entry] = &[
         kind: Kind::Positionwise { fixed: 0 },
         gives: Gives::Always(CellType::Logical),
         app: app("NOT", &[0]),
+    },
+    // As the app's NPV, the first cash flow is discounted by one period: the result is the value
+    // a period before the first cash flow, not at it.
+    Entry {
+        name: "npv",
+        builtin: Builtin::Npv,
+        usage: "npv rate cash_flows",
+        takes: &[NUMBER, NUMBER],
+        kind: Kind::Reduce { fixed: 1 },
+        gives: Gives::Always(CellType::Number),
+        app: app("NPV", &[0, 1]),
     },
     Entry {
         name: "round",
@@ -483,6 +509,26 @@ const TABLE: &[Entry] = &[
     // Removes spaces at either end, and leaves one between words (§18.17.7.329).
     textual("trim", Builtin::Trim, "trim x", "TRIM"),
     textual("upper", Builtin::Upper, "upper x", "UPPER"),
+    // Cash flows on dates, lined up with them: the value at the first date, and the rate that
+    // makes it nil. The app takes the cash flows first and the dates second.
+    Entry {
+        name: "xirr",
+        builtin: Builtin::Xirr,
+        usage: "xirr dates cash_flows",
+        takes: &[NUMBER, NUMBER],
+        kind: Kind::Reduce { fixed: 0 },
+        gives: Gives::Always(CellType::Number),
+        app: app("XIRR", &[1, 0]),
+    },
+    Entry {
+        name: "xnpv",
+        builtin: Builtin::Xnpv,
+        usage: "xnpv rate dates cash_flows",
+        takes: &[NUMBER, NUMBER, NUMBER],
+        kind: Kind::Reduce { fixed: 1 },
+        gives: Gives::Always(CellType::Number),
+        app: app("XNPV", &[0, 2, 1]),
+    },
     logical("xor", Builtin::Xor, "xor x", "_xlfn.XOR"),
     numeric("year_of", Builtin::YearOf, "year_of date", "YEAR"),
 ];

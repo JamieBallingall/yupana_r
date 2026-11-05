@@ -508,6 +508,11 @@ is provisional. [docs/language.md](docs/language.md) describes 0.2 as it is buil
   `end_of_month k x` is written `DATE(YEAR(x),MONTH(x)+k+1,0)`, by DATE's rule that day 0 is the
   last day of the month before (§18.17.7.74), because the app's EOMONTH gives #VALUE! for a
   range of dates.
+- **Discounting** (decided 2026-11-04). `npv r x`, `irr x`, `xnpv r dates x` and
+  `xirr dates x` are the app's NPV, IRR, XNPV and XIRR, with the rate first as an argument that
+  says how much. `npv` keeps the app's convention, which discounts the first cash flow by a whole
+  period: a modeller reading the workbook sees NPV mean what it always means there. The docs show
+  how to value a project whose first cash flow is today.
 - **`first` and `last`** (decided 2026-11-04) give the first or last k positions of a range,
   written with TAKE. Their result starts at position 0 and stands alone, since a span starts at
   a whole number and the last k of a range of unknown length start at a size. `last 1 x` is a
@@ -968,7 +973,7 @@ Where 0.1 or 0.2 gives an answer, it follows in italics; [Built for 0.1](#built-
 21. **Time aggregation:** rolling monthly ranges up to annual ones (`sum revenue by year`), which
     maps one size variable onto another.
 22. **The function library:** which of the app's functions stage 1 supports. *0.1: eighteen. 0.2:
-    the forty-six in [docs/language.md](docs/language.md).*
+    the fifty in [docs/language.md](docs/language.md).*
 23. **Deterministic output:** does the same input always give byte-identical xlsx? *0.1 and 0.2:
     yes.*
 24. **Widths with another font:** a width in pixels is exact only with the default font, whose

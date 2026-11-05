@@ -217,6 +217,10 @@ either does, as in arithmetic.
 | `first k x`, `last k x` | the first or last k positions of x | `TAKE(x,,k)`, `TAKE(x,,-k)` |
 | `sum x`, `average x` | one value from all of x | `SUM(x)`, `AVERAGE(x)` |
 | `minimum x`, `maximum x` | one value from all of x | `MIN(x)`, `MAX(x)` |
+| `npv r x` | x's value a period before its first cash flow, at the rate r | `NPV(r,x)` |
+| `irr x` | the rate at which x's NPV is nil | `IRR(x)` |
+| `xnpv r d x` | x's value at its first date, with x on the dates d | `XNPV(r,x,d)` |
+| `xirr d x` | the rate at which x's XNPV is nil | `XIRR(x,d)` |
 | `sum_if c x`, `count_if c` | the sum of x, or the count, where c holds | `SUM(IF(c,x,0))` |
 | `sum_columns x` | the sum of each column, as one row | `BYCOL(x,LAMBDA(x,SUM(x)))` |
 | `sum_rows x` | the sum of each row, as one column | `BYROW(x,LAMBDA(x,SUM(x)))` |
@@ -243,6 +247,10 @@ either does, as in arithmetic.
 | `column "c" t` | the column called `c` of the table `t` | `INDEX(t,0,j)` |
 | `na` | the error `#N/A` | `NA()` |
 | `csv "file.csv"` | a table read from a file, as the whole of a value's definition | its cells |
+
+`npv` discounts the first cash flow by a whole period, as the app's NPV does, so a project's
+value today, with its first cash flow today, is `first 1 x + npv r (tail x)`. `irr` and `xirr`
+search for a rate and give `#NUM!` where they find none.
 
 `first` and `last` give k positions that stand alone, starting at position 0, rather than lining
 up with the range: `last 1 revenue` is the last revenue, one value. The range must have at
