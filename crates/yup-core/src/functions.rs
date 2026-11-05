@@ -1,10 +1,18 @@
-//! The built-in functions: their names in `.yup` and how many arguments they take.
+//! The built-in functions: their names in `.yup`, what they take and give, and, for most, the
+//! app's function that writes them.
 //!
-//! What each does to sizes is in Infer, and how it is written in the workbook is in Lower.
+//! One entry says everything about a function that the steps share: Resolve counts its
+//! arguments, Infer shapes and types its result from its kind, Resolve lets a function that
+//! works position by position take part in a carried value, and Lower writes a function that is
+//! one of the app's under that name. A function whose sizes, type or writing follow a rule of
+//! its own has that rule in the step concerned.
+//!
 //! Arguments that say how much (`lag 1 x`, `round 2 x`) come first and the data last, so that a
 //! call reads from the operation to what it acts on. `lag`, `tail` and `init` may say which way
 //! they work, `across` or `down`, straight after their name. A function of no arguments, `na`,
 //! is written by its name alone.
+
+use crate::syntax::CellType;
 
 /// A built-in function.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,30 +41,233 @@ pub enum Builtin {
     Transpose,
 }
 
-/// Each function's name, the function, how many arguments it takes, and how it is called.
-const TABLE: &[(&str, Builtin, usize, &str)] = &[
-    ("abs", Builtin::Abs, 1, "abs x"),
-    ("average", Builtin::Average, 1, "average x"),
-    ("column", Builtin::Column, 2, "column \"name\" table"),
-    ("csv", Builtin::Csv, 1, "csv \"file.csv\""),
-    ("exp", Builtin::Exp, 1, "exp x"),
-    ("init", Builtin::Init, 1, "init x"),
-    ("lag", Builtin::Lag, 2, "lag 1 x, or lag 1 x seed first"),
-    ("ln", Builtin::Ln, 1, "ln x"),
-    ("lookup", Builtin::Lookup, 3, "lookup key keys values"),
-    ("max", Builtin::Max, 2, "max a b"),
-    ("maximum", Builtin::Maximum, 1, "maximum x"),
-    ("min", Builtin::Min, 2, "min a b"),
-    ("minimum", Builtin::Minimum, 1, "minimum x"),
-    ("na", Builtin::Na, 0, "na"),
-    ("not", Builtin::Not, 1, "not x"),
-    ("round", Builtin::Round, 2, "round digits x"),
-    ("sqrt", Builtin::Sqrt, 1, "sqrt x"),
-    ("sum", Builtin::Sum, 1, "sum x"),
-    ("sum_columns", Builtin::SumColumns, 1, "sum_columns x"),
-    ("sum_rows", Builtin::SumRows, 1, "sum_rows x"),
-    ("tail", Builtin::Tail, 1, "tail x"),
-    ("transpose", Builtin::Transpose, 1, "transpose x"),
+/// How a function's result is shaped by its arguments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// Position by position. The first `fixed` arguments say how much and are single values;
+    /// the rest combine as an operator's operands do, and give the result its shape. Such a
+    /// function may take part in a value carried from one position to the next.
+    Positionwise { fixed: usize },
+    /// One value from all of its argument.
+    Reduce,
+    /// A rule of its own, in Infer.
+    Own,
+}
+
+/// What a function's result holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gives {
+    /// Always this type.
+    Always(CellType),
+    /// What the argument at this index holds.
+    Like(usize),
+    /// A rule of its own, in Infer.
+    Own,
+}
+
+/// A function written as one of the app's, applied to the function's arguments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct App {
+    /// The app's name, with the `_xlfn.` prefix that the file gives a newer function.
+    pub name: &'static str,
+    /// The indexes of the `.yup` arguments in the app's order: `round 2 x` is `ROUND(x,2)`.
+    pub order: &'static [usize],
+}
+
+/// Everything about one function.
+struct Entry {
+    name: &'static str,
+    builtin: Builtin,
+    /// How the function is called, for messages.
+    usage: &'static str,
+    /// What each argument takes: a type, or `None` for anything.
+    takes: &'static [Option<CellType>],
+    kind: Kind,
+    gives: Gives,
+    app: Option<App>,
+}
+
+const NUMBER: Option<CellType> = Some(CellType::Number);
+const TEXT: Option<CellType> = Some(CellType::Text);
+const ANY: Option<CellType> = None;
+
+const fn app(name: &'static str, order: &'static [usize]) -> Option<App> {
+    Some(App { name, order })
+}
+
+/// A function of one number, position by position, that is the app's of the same name.
+const fn numeric(
+    name: &'static str,
+    builtin: Builtin,
+    usage: &'static str,
+    app_name: &'static str,
+) -> Entry {
+    Entry {
+        name,
+        builtin,
+        usage,
+        takes: &[NUMBER],
+        kind: Kind::Positionwise { fixed: 0 },
+        gives: Gives::Always(CellType::Number),
+        app: app(app_name, &[0]),
+    }
+}
+
+/// A function that reduces a range of numbers to one, and is the app's of the same name.
+const fn reduction(
+    name: &'static str,
+    builtin: Builtin,
+    usage: &'static str,
+    app_name: &'static str,
+) -> Entry {
+    Entry {
+        name,
+        builtin,
+        usage,
+        takes: &[NUMBER],
+        kind: Kind::Reduce,
+        gives: Gives::Always(CellType::Number),
+        app: app(app_name, &[0]),
+    }
+}
+
+const TABLE: &[Entry] = &[
+    numeric("abs", Builtin::Abs, "abs x", "ABS"),
+    reduction("average", Builtin::Average, "average x", "AVERAGE"),
+    Entry {
+        name: "column",
+        builtin: Builtin::Column,
+        usage: "column \"name\" table",
+        takes: &[TEXT, ANY],
+        kind: Kind::Own,
+        gives: Gives::Own,
+        app: None,
+    },
+    Entry {
+        name: "csv",
+        builtin: Builtin::Csv,
+        usage: "csv \"file.csv\"",
+        takes: &[TEXT],
+        kind: Kind::Own,
+        gives: Gives::Own,
+        app: None,
+    },
+    numeric("exp", Builtin::Exp, "exp x", "EXP"),
+    Entry {
+        name: "init",
+        builtin: Builtin::Init,
+        usage: "init x",
+        takes: &[ANY],
+        kind: Kind::Own,
+        gives: Gives::Like(0),
+        app: None,
+    },
+    Entry {
+        name: "lag",
+        builtin: Builtin::Lag,
+        usage: "lag 1 x, or lag 1 x seed first",
+        takes: &[NUMBER, ANY],
+        kind: Kind::Own,
+        gives: Gives::Own,
+        app: None,
+    },
+    numeric("ln", Builtin::Ln, "ln x", "LN"),
+    Entry {
+        name: "lookup",
+        builtin: Builtin::Lookup,
+        usage: "lookup key keys values",
+        takes: &[ANY, ANY, ANY],
+        kind: Kind::Own,
+        gives: Gives::Like(2),
+        app: app("_xlfn.XLOOKUP", &[0, 1, 2]),
+    },
+    // The app's MAX and MIN reduce whole ranges, so `max` and `min`, which work position by
+    // position, are written by Lower as a choice between the two.
+    Entry {
+        name: "max",
+        builtin: Builtin::Max,
+        usage: "max a b",
+        takes: &[NUMBER, NUMBER],
+        kind: Kind::Positionwise { fixed: 0 },
+        gives: Gives::Always(CellType::Number),
+        app: None,
+    },
+    reduction("maximum", Builtin::Maximum, "maximum x", "MAX"),
+    Entry {
+        name: "min",
+        builtin: Builtin::Min,
+        usage: "min a b",
+        takes: &[NUMBER, NUMBER],
+        kind: Kind::Positionwise { fixed: 0 },
+        gives: Gives::Always(CellType::Number),
+        app: None,
+    },
+    reduction("minimum", Builtin::Minimum, "minimum x", "MIN"),
+    Entry {
+        name: "na",
+        builtin: Builtin::Na,
+        usage: "na",
+        takes: &[],
+        kind: Kind::Own,
+        gives: Gives::Own,
+        app: None,
+    },
+    Entry {
+        name: "not",
+        builtin: Builtin::Not,
+        usage: "not x",
+        takes: &[ANY],
+        kind: Kind::Positionwise { fixed: 0 },
+        gives: Gives::Always(CellType::Logical),
+        app: app("NOT", &[0]),
+    },
+    Entry {
+        name: "round",
+        builtin: Builtin::Round,
+        usage: "round digits x",
+        takes: &[NUMBER, NUMBER],
+        kind: Kind::Positionwise { fixed: 1 },
+        gives: Gives::Always(CellType::Number),
+        app: app("ROUND", &[1, 0]),
+    },
+    numeric("sqrt", Builtin::Sqrt, "sqrt x", "SQRT"),
+    reduction("sum", Builtin::Sum, "sum x", "SUM"),
+    Entry {
+        name: "sum_columns",
+        builtin: Builtin::SumColumns,
+        usage: "sum_columns x",
+        takes: &[NUMBER],
+        kind: Kind::Own,
+        gives: Gives::Always(CellType::Number),
+        app: None,
+    },
+    Entry {
+        name: "sum_rows",
+        builtin: Builtin::SumRows,
+        usage: "sum_rows x",
+        takes: &[NUMBER],
+        kind: Kind::Own,
+        gives: Gives::Always(CellType::Number),
+        app: None,
+    },
+    Entry {
+        name: "tail",
+        builtin: Builtin::Tail,
+        usage: "tail x",
+        takes: &[ANY],
+        kind: Kind::Own,
+        gives: Gives::Like(0),
+        app: None,
+    },
+    Entry {
+        name: "transpose",
+        builtin: Builtin::Transpose,
+        usage: "transpose x",
+        takes: &[ANY],
+        kind: Kind::Own,
+        gives: Gives::Like(0),
+        app: None,
+    },
 ];
 
 impl Builtin {
@@ -64,24 +275,73 @@ impl Builtin {
     pub fn lookup(name: &str) -> Option<Builtin> {
         TABLE
             .iter()
-            .find(|entry| entry.0 == name)
-            .map(|entry| entry.1)
+            .find(|entry| entry.name == name)
+            .map(|entry| entry.builtin)
     }
 
-    fn entry(self) -> &'static (&'static str, Builtin, usize, &'static str) {
+    fn entry(self) -> &'static Entry {
         TABLE
             .iter()
-            .find(|entry| entry.1 == self)
+            .find(|entry| entry.builtin == self)
             .expect("every built-in function is in the table")
+    }
+
+    /// The function's `.yup` name.
+    pub fn name(self) -> &'static str {
+        self.entry().name
     }
 
     /// How many arguments the function takes.
     pub fn arity(self) -> usize {
-        self.entry().2
+        self.entry().takes.len()
     }
 
     /// How the function is called, for messages.
     pub fn usage(self) -> &'static str {
-        self.entry().3
+        self.entry().usage
+    }
+
+    /// How the result is shaped by the arguments.
+    pub fn kind(self) -> Kind {
+        self.entry().kind
+    }
+
+    /// What the result holds.
+    pub fn gives(self) -> Gives {
+        self.entry().gives
+    }
+
+    /// The app's function that writes this one, if it is written as one.
+    pub fn app(self) -> Option<App> {
+        self.entry().app
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_entry_is_consistent() {
+        for entry in TABLE {
+            let builtin = entry.builtin;
+            assert_eq!(Builtin::lookup(entry.name), Some(builtin), "{}", entry.name);
+            assert!(entry.usage.starts_with(entry.name), "{}", entry.name);
+            if let Kind::Positionwise { fixed } = entry.kind {
+                assert!(fixed < entry.takes.len(), "{}", entry.name);
+            }
+            if let Gives::Like(index) = entry.gives {
+                assert!(index < entry.takes.len(), "{}", entry.name);
+            }
+            if let Some(app) = entry.app {
+                let mut order = app.order.to_vec();
+                order.sort_unstable();
+                assert!(
+                    order.iter().copied().eq(0..entry.takes.len()),
+                    "{} writes each argument once",
+                    entry.name
+                );
+            }
+        }
     }
 }

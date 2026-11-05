@@ -13,7 +13,7 @@ use crate::Inputs;
 use crate::cells::{self, looks_like_cell, looks_like_r1c1};
 use crate::csv::{self, Table};
 use crate::diagnostic::{Diagnostic, Pos};
-use crate::functions::Builtin;
+use crate::functions::{Builtin, Kind};
 use crate::parser::is_keyword;
 use crate::printer::expression;
 use crate::style::{self, CellStyle, Declared, Evaluator, Font, Rgb, Value};
@@ -1708,17 +1708,8 @@ impl RecurrenceCheck<'_> {
             }
             ExprKind::Apply { func, args, .. } => {
                 let position_by_position = matches!(
-                    Builtin::lookup(&func.name),
-                    Some(
-                        Builtin::Min
-                            | Builtin::Max
-                            | Builtin::Abs
-                            | Builtin::Exp
-                            | Builtin::Ln
-                            | Builtin::Sqrt
-                            | Builtin::Round
-                            | Builtin::Not
-                    )
+                    Builtin::lookup(&func.name).map(Builtin::kind),
+                    Some(Kind::Positionwise { .. })
                 );
                 if !position_by_position {
                     return Err(Diagnostic::error(

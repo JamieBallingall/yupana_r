@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::csv::Field;
 use crate::diagnostic::{Diagnostic, Pos};
-use crate::functions::Builtin;
+use crate::functions::{Builtin, Gives, Kind};
 use crate::resolve::{Model, Recurrence, Symbol};
 use crate::size::SizeExpr;
 use crate::syntax::{
@@ -518,6 +518,16 @@ impl Infer<'_> {
         args: &[Expr],
         seed: Option<&Expr>,
     ) -> Inferred {
+        match builtin.kind() {
+            Kind::Positionwise { fixed } => return self.positionwise(expr, builtin, fixed, args),
+            Kind::Reduce => {
+                for arg in args {
+                    self.shape(arg)?;
+                }
+                return Ok(Shape::scalar());
+            }
+            Kind::Own => {}
+        }
         match builtin {
             Builtin::Lag => {
                 let steps = steps(&args[0], "lag")?;
@@ -568,10 +578,6 @@ impl Infer<'_> {
                 self.shift(&x, axis, 0, 1, expr.pos, "init")
             }
             Builtin::Na => Ok(Shape::scalar()),
-            Builtin::Sum | Builtin::Average | Builtin::Minimum | Builtin::Maximum => {
-                self.shape(&args[0])?;
-                Ok(Shape::scalar())
-            }
             Builtin::SumColumns => {
                 let x = self.shape(&args[0])?;
                 Ok(Shape {
@@ -584,16 +590,6 @@ impl Infer<'_> {
                 Ok(Shape {
                     rows: x.rows,
                     columns: Extent::one(),
-                })
-            }
-            Builtin::Min | Builtin::Max => {
-                let a = self.shape(&args[0])?;
-                let b = self.shape(&args[1])?;
-                self.combine(&a, &b).map_err(|problem| {
-                    fail(
-                        expr.pos,
-                        format!("the two arguments of `{}` {problem}", function_name(expr)),
-                    )
                 })
             }
             Builtin::Csv => {
@@ -612,16 +608,6 @@ impl Infer<'_> {
                     rows: table.rows,
                     columns: Extent::one(),
                 })
-            }
-            Builtin::Abs | Builtin::Exp | Builtin::Ln | Builtin::Sqrt | Builtin::Not => {
-                self.shape(&args[0])
-            }
-            Builtin::Round => {
-                let digits = self.shape(&args[0])?;
-                if !self.is_scalar(&digits) {
-                    return Err(fail(args[0].pos, "`round` takes one number of digits"));
-                }
-                self.shape(&args[1])
             }
             Builtin::Transpose => {
                 let x = self.shape(&args[0])?;
@@ -649,7 +635,48 @@ impl Infer<'_> {
                 // One result for each key looked up, where the key is.
                 Ok(key)
             }
+            _ => unreachable!("every function whose kind is its own has a rule here"),
         }
+    }
+
+    /// A function that works position by position: its first `fixed` arguments are single
+    /// values, and the rest combine as an operator's operands do.
+    fn positionwise(
+        &mut self,
+        expr: &Expr,
+        builtin: Builtin,
+        fixed: usize,
+        args: &[Expr],
+    ) -> Inferred {
+        for arg in &args[..fixed] {
+            let shape = self.shape(arg)?;
+            if !self.is_scalar(&shape) {
+                return Err(fail(
+                    arg.pos,
+                    format!(
+                        "this argument of `{}` is one value, as in `{}`",
+                        builtin.name(),
+                        builtin.usage()
+                    ),
+                ));
+            }
+        }
+        let data = &args[fixed..];
+        let mut shape = self.shape(&data[0])?;
+        for arg in &data[1..] {
+            let next = self.shape(arg)?;
+            shape = self.combine(&shape, &next).map_err(|problem| {
+                let which = if data.len() == 2 { "two " } else { "" };
+                fail(
+                    expr.pos,
+                    format!(
+                        "the {which}arguments of `{}` {problem}",
+                        function_name(expr)
+                    ),
+                )
+            })?;
+        }
+        Ok(shape)
     }
 
     /// Infers a recurrence, in two passes. First the carried value, where it is lagged, is taken
@@ -1136,14 +1163,17 @@ impl Infer<'_> {
                     None => Ty::Never,
                 };
                 match Builtin::lookup(&func.name) {
-                    Some(Builtin::Lag) => join(types[1], seed),
-                    Some(Builtin::Tail | Builtin::Init | Builtin::Transpose) => types[0],
-                    Some(Builtin::Not) => Ty::Known(CellType::Logical),
-                    Some(Builtin::Lookup) => types[2],
-                    Some(Builtin::Column) => self.column_type(&args[0], &args[1]),
-                    Some(Builtin::Csv) => Ty::Any,
-                    Some(Builtin::Na) => Ty::Never,
-                    Some(_) => Ty::Known(CellType::Number),
+                    Some(builtin) => match (builtin.gives(), builtin) {
+                        (Gives::Always(ty), _) => Ty::Known(ty),
+                        (Gives::Like(index), _) => types[index],
+                        (Gives::Own, Builtin::Lag) => join(types[1], seed),
+                        (Gives::Own, Builtin::Column) => self.column_type(&args[0], &args[1]),
+                        (Gives::Own, Builtin::Csv) => Ty::Any,
+                        (Gives::Own, Builtin::Na) => Ty::Never,
+                        (Gives::Own, _) => {
+                            unreachable!("every function whose type is its own has a rule here")
+                        }
+                    },
                     None => {
                         let Some(Symbol::Binding(binding)) = self.model.symbols.get(&func.name)
                         else {

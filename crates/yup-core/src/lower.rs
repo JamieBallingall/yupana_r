@@ -884,6 +884,14 @@ impl Lowerer<'_> {
                 Axis::Down => call("_xlfn.DROP", &[x, count]),
             }
         };
+        if let Some(app) = builtin.app() {
+            let args = app
+                .order
+                .iter()
+                .map(|&index| arg(index))
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(call(app.name, &args));
+        }
         let formula = match builtin {
             // Inside one position of a recurrence, the value a position back is the scan's own.
             Builtin::Lag
@@ -914,10 +922,6 @@ impl Lowerer<'_> {
             }
             Builtin::Tail => drop(arg(0)?, self.axis(expr, written), 1),
             Builtin::Init => drop(arg(0)?, self.axis(expr, written), -1),
-            Builtin::Sum => call("SUM", &[arg(0)?]),
-            Builtin::Average => call("AVERAGE", &[arg(0)?]),
-            Builtin::Minimum => call("MIN", &[arg(0)?]),
-            Builtin::Maximum => call("MAX", &[arg(0)?]),
             Builtin::SumColumns | Builtin::SumRows => {
                 let by = if builtin == Builtin::SumColumns {
                     "_xlfn.BYCOL"
@@ -948,18 +952,11 @@ impl Lowerer<'_> {
                     call("_xlfn.LET", &[x, a, y, b, choice])
                 }
             }
-            Builtin::Abs => call("ABS", &[arg(0)?]),
-            Builtin::Exp => call("EXP", &[arg(0)?]),
-            Builtin::Ln => call("LN", &[arg(0)?]),
-            Builtin::Sqrt => call("SQRT", &[arg(0)?]),
-            Builtin::Not => call("NOT", &[arg(0)?]),
-            Builtin::Round => call("ROUND", &[arg(1)?, arg(0)?]),
             // A column of whole numbers is written as one, rather than as a row transposed.
             Builtin::Transpose => match &args[0].kind {
                 ExprKind::Range { first, last } => self.range(first, last, Axis::Down, scope)?,
                 _ => call("TRANSPOSE", &[arg(0)?]),
             },
-            Builtin::Lookup => call("_xlfn.XLOOKUP", &[arg(0)?, arg(1)?, arg(2)?]),
             Builtin::Column => {
                 let (ExprKind::Str(name), ExprKind::Name(table)) = (&args[0].kind, &args[1].kind)
                 else {
@@ -985,6 +982,7 @@ impl Lowerer<'_> {
             }
             Builtin::Na => call("NA", &[]),
             Builtin::Csv => unreachable!("Resolve allows csv only as a value's definition"),
+            _ => unreachable!("a function written as the app's is written above"),
         };
         Ok(formula)
     }
