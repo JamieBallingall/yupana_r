@@ -1264,11 +1264,14 @@ impl Scope<'_> {
                 seed,
             } => {
                 self.resolve_call(func, args.len(), uses, errors);
-                let shifts = matches!(func.name.as_str(), "lag" | "tail" | "init");
+                let shifts = matches!(
+                    func.name.as_str(),
+                    "lag" | "tail" | "init" | "first" | "last"
+                );
                 if axis.is_some() && !shifts {
                     errors.push(Diagnostic::error(
                         func.pos,
-                        "only `lag`, `tail` and `init` say which way they work",
+                        "only `lag`, `tail`, `init`, `first` and `last` say which way they work",
                     ));
                 }
                 // A lambda's body is written once into the workbook, however it is called.

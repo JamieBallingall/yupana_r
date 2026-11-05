@@ -570,6 +570,45 @@ impl Infer<'_> {
                 let axis = self.axis(&x, written, expr.pos, "tail")?;
                 self.shift(&x, axis, 1, 1, expr.pos, "tail")
             }
+            Builtin::First | Builtin::Last => {
+                let what = builtin.name();
+                let count = steps(&args[0], what)?;
+                let x = self.shape(&args[1])?;
+                let axis = self.axis(&x, written, expr.pos, what)?;
+                let (along, dimension) = match axis {
+                    Axis::Across => (&x.columns, "columns"),
+                    Axis::Down => (&x.rows, "rows"),
+                };
+                // The range has at least this many positions, with each unknown size at its
+                // smallest, 1; were it shorter, the app would give fewer than `count`.
+                let size = self.normal(&along.size);
+                let fewest = size.evaluate(|_| 1);
+                if count > fewest {
+                    let may = if size.as_constant().is_none() {
+                        format!(", which may be as few as {fewest}")
+                    } else {
+                        String::new()
+                    };
+                    return Err(fail(
+                        args[0].pos,
+                        format!(
+                            "`{what} {count}` takes {count} {dimension}, and the range has {}{may}",
+                            self.show(&along.size)
+                        ),
+                    ));
+                }
+                let taken = Extent::of(SizeExpr::constant(count));
+                Ok(match axis {
+                    Axis::Across => Shape {
+                        rows: x.rows,
+                        columns: taken,
+                    },
+                    Axis::Down => Shape {
+                        rows: taken,
+                        columns: x.columns,
+                    },
+                })
+            }
             Builtin::Init => {
                 let x = self.shape(&args[0])?;
                 let axis = self.axis(&x, written, expr.pos, "init")?;
@@ -1431,8 +1470,8 @@ mod tests {
     #[test]
     fn spans_follow_lag_tail_and_init() {
         let source = format!(
-            "{FORECAST}growth : Local\ngrowth = tail revenue / lag 1 revenue - 1\nfirst : \
-             Local\nfirst = init revenue\ncol : Local\ncol = tail (transpose revenue)\n"
+            "{FORECAST}growth : Local\ngrowth = tail revenue / lag 1 revenue - 1\nleading : \
+             Local\nleading = init revenue\ncol : Local\ncol = tail (transpose revenue)\n"
         );
         assert_eq!(
             shapes(&source),
@@ -1441,7 +1480,7 @@ mod tests {
                 "period [1, period_n] start [0, 0]",
                 "revenue [1, period_n] start [0, 0]",
                 "growth [1, period_n - 1] start [0, 1]",
-                "first [1, period_n - 1] start [0, 0]",
+                "leading [1, period_n - 1] start [0, 0]",
                 "col [period_n - 1, 1] start [1, 0]",
             ]
         );

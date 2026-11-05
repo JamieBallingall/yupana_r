@@ -659,7 +659,7 @@ payable_days_actual = payables_actual / cost_of_sales_actual * days_actual
 
 // Where the forecast starts: each balance at the last reported quarter.
 at_end : Lambda Number -> Number
-at_end x = lookup last_quarter number_actual x
+at_end x = last across 1 x
 
 start_section : Label style section payable_days_actual_label down 2
 start_section = "Where the forecast starts"
@@ -1241,9 +1241,9 @@ net_debt_label = "Net debt"
 net_debt : Formula Number style money net_debt_label right 2
 net_debt = debt - cash
 
-// `before first x` is x a quarter earlier, starting from `first`.
+// `before earliest x` is x a quarter earlier, starting from `earliest`.
 before : Lambda Number -> Number -> Number
-before first x = lag across 1 x seed first
+before earliest x = lag across 1 x seed earliest
 
 ebitda_one_label : Label style item net_debt_label down
 ebitda_one_label = "EBITDA, a quarter earlier"

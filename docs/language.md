@@ -214,6 +214,7 @@ either does, as in arithmetic.
 | `lag 1 x seed v` | x moved one position along, with v first | `HSTACK(v,DROP(x,,-1))` |
 | `tail x` | x without its first position, so starting one later | `DROP(x,,1)` |
 | `init x` | x without its last position | `DROP(x,,-1)` |
+| `first k x`, `last k x` | the first or last k positions of x | `TAKE(x,,k)`, `TAKE(x,,-k)` |
 | `sum x`, `average x` | one value from all of x | `SUM(x)`, `AVERAGE(x)` |
 | `minimum x`, `maximum x` | one value from all of x | `MIN(x)`, `MAX(x)` |
 | `sum_if c x`, `count_if c` | the sum of x, or the count, where c holds | `SUM(IF(c,x,0))` |
@@ -243,10 +244,15 @@ either does, as in arithmetic.
 | `na` | the error `#N/A` | `NA()` |
 | `csv "file.csv"` | a table read from a file, as the whole of a value's definition | its cells |
 
-`lag`, `tail` and `init` work along a range's one dimension when it has only one: across a row,
-from column to column, or down a column, from row to row, where they are written `DROP(x,-k)`
-and so on, and a seed is stacked with `VSTACK`. A range of more than one row and column needs
-the direction written straight after the function's name: `tail across grid`, `lag down 1 grid`.
+`first` and `last` give k positions that stand alone, starting at position 0, rather than lining
+up with the range: `last 1 revenue` is the last revenue, one value. The range must have at
+least k positions however its unknown sizes turn out.
+
+`lag`, `tail`, `init`, `first` and `last` work along a range's one dimension when it has only
+one: across a row, from column to column, or down a column, from row to row, where they are
+written `DROP(x,-k)` and so on, and a seed is stacked with `VSTACK`. A range of more than one row
+and column needs the direction written straight after the function's name: `tail across grid`,
+`lag down 1 grid`.
 
 A date is a number: the serial day of the 1900 date system, in which the workbook is always
 written, so 1 January 2026 is 46023. `date_of` lets its month and day run over, so

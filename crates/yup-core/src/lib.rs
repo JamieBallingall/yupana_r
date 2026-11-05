@@ -628,8 +628,8 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
 
     #[test]
     fn a_column_of_whole_numbers_is_written_as_one() {
-        let source = "col : Formula at main D2\ncol = transpose (2 .. 4)\nfirst : Formula \
-                      col right\nfirst = init col\n";
+        let source = "col : Formula at main D2\ncol = transpose (2 .. 4)\nleading : Formula \
+                      col right\nleading = init col\n";
         let listing = text(source, Step::Lower);
         for line in [
             "  D2     =_xlfn.SEQUENCE(3,1,2)",
@@ -675,6 +675,38 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
                 assert_eq!(twice, once, "{}", step.name());
             }
         }
+    }
+
+    #[test]
+    fn first_and_last_take_positions_that_stand_alone() {
+        let source = "row : Formula at main $D$2\nrow = 1 .. 4\nopening : Formula row down 1\n\
+                      opening = first 2 row\nclosing : Formula \
+                      opening down 1\nclosing = last 1 row\ncolumn_end : Formula closing down 1\n\
+                      column_end = last 1 (transpose row)\n";
+        let grounded = text(source, Step::Ground);
+        assert!(
+            grounded.contains("opening : Formula Number size [1, 2] at main D3"),
+            "{grounded}"
+        );
+        let listing = text(source, Step::Lower);
+        for line in [
+            "  D3     =_xlfn.TAKE(row,,2)",
+            "  D4     =_xlfn.TAKE(row,,-1)",
+            "  D5     =_xlfn.TAKE(TRANSPOSE(row),-1)",
+        ] {
+            assert!(listing.contains(line), "{line}\n{listing}");
+        }
+        assert_eq!(
+            errors(
+                "h : Value at main $B$9\nh = 4\nrow : Formula at main $D$2\nrow = 1 .. h\nmore : \
+                 Formula row down 1\nmore = last 2 row\n",
+                Step::Infer
+            ),
+            [
+                "11:13: error: `last 2` takes 2 columns, and the range has row_n, which may be as \
+                 few as 1"
+            ]
+        );
     }
 
     #[test]

@@ -921,6 +921,22 @@ impl Lowerer<'_> {
                 }
             }
             Builtin::Tail => drop(arg(0)?, self.axis(expr, written), 1),
+            // TAKE takes rows first and columns second, from the end where the count is negative.
+            Builtin::First | Builtin::Last => {
+                let count = args[0]
+                    .integer()
+                    .expect("Infer checks that a count is a whole number");
+                let count = if builtin == Builtin::Last {
+                    -count
+                } else {
+                    count
+                };
+                let count = Formula::atom(count.to_string());
+                match self.axis(expr, written) {
+                    Axis::Across => call("_xlfn.TAKE", &[arg(1)?, Formula::atom(""), count]),
+                    Axis::Down => call("_xlfn.TAKE", &[arg(1)?, count]),
+                }
+            }
             Builtin::Init => drop(arg(0)?, self.axis(expr, written), -1),
             Builtin::SumColumns | Builtin::SumRows => {
                 let by = if builtin == Builtin::SumColumns {

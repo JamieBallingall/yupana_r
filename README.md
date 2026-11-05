@@ -508,6 +508,11 @@ is provisional. [docs/language.md](docs/language.md) describes 0.2 as it is buil
   `end_of_month k x` is written `DATE(YEAR(x),MONTH(x)+k+1,0)`, by DATE's rule that day 0 is the
   last day of the month before (§18.17.7.74), because the app's EOMONTH gives #VALUE! for a
   range of dates.
+- **`first` and `last`** (decided 2026-11-04) give the first or last k positions of a range,
+  written with TAKE. Their result starts at position 0 and stands alone, since a span starts at
+  a whole number and the last k of a range of unknown length start at a size. `last 1 x` is a
+  range's final value. The count is a whole number, and the range must have at least that many
+  positions with every unknown size at 1, since TAKE gives fewer where there are fewer.
 - **Conditional sums** (decided 2026-11-04). `sum_if c x` and `count_if c` take a condition
   that is a logical at each position, such as `region == "North" && year >= 2026`, lined up with
   `x`. The app's SUMIFS and COUNTIFS take criteria as text instead, where `">5"` is a comparison
@@ -963,7 +968,7 @@ Where 0.1 or 0.2 gives an answer, it follows in italics; [Built for 0.1](#built-
 21. **Time aggregation:** rolling monthly ranges up to annual ones (`sum revenue by year`), which
     maps one size variable onto another.
 22. **The function library:** which of the app's functions stage 1 supports. *0.1: eighteen. 0.2:
-    the forty-four in [docs/language.md](docs/language.md).*
+    the forty-six in [docs/language.md](docs/language.md).*
 23. **Deterministic output:** does the same input always give byte-identical xlsx? *0.1 and 0.2:
     yes.*
 24. **Widths with another font:** a width in pixels is exact only with the default font, whose

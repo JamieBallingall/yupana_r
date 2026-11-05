@@ -92,7 +92,7 @@ fn starts_atom(token: &Token) -> bool {
 
 /// The functions that may say which way they work along a range.
 fn takes_axis(name: &str) -> bool {
-    matches!(name, "lag" | "tail" | "init")
+    matches!(name, "lag" | "tail" | "init" | "first" | "last")
 }
 
 impl Parser {
