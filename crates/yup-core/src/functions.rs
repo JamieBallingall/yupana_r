@@ -25,6 +25,8 @@ pub enum Builtin {
     CeilingTo,
     Column,
     Csv,
+    DateOf,
+    EndOfMonth,
     Exact,
     Exp,
     Floor,
@@ -40,6 +42,7 @@ pub enum Builtin {
     Min,
     Minimum,
     Mod,
+    MonthOf,
     Na,
     Not,
     Round,
@@ -55,6 +58,7 @@ pub enum Builtin {
     Trim,
     Upper,
     Xor,
+    YearOf,
 }
 
 /// How a function's result is shaped by its arguments.
@@ -237,6 +241,18 @@ const TABLE: &[Entry] = &[
         gives: Gives::Own,
         app: None,
     },
+    // A date is a number, the serial day of the 1900 date system the workbook uses. The year,
+    // month and day may run over: day 0 is the last day of the month before (ECMA-376 Part 1
+    // §18.17.7.74).
+    Entry {
+        name: "date_of",
+        builtin: Builtin::DateOf,
+        usage: "date_of year month day",
+        takes: &[NUMBER, NUMBER, NUMBER],
+        kind: Kind::Positionwise { fixed: 0 },
+        gives: Gives::Always(CellType::Number),
+        app: app("DATE", &[0, 1, 2]),
+    },
     Entry {
         name: "csv",
         builtin: Builtin::Csv,
@@ -246,6 +262,14 @@ const TABLE: &[Entry] = &[
         gives: Gives::Own,
         app: None,
     },
+    // Written by Lower with DATE: the app's EOMONTH gives #VALUE! for a range where it takes a
+    // date.
+    by(
+        "end_of_month",
+        Builtin::EndOfMonth,
+        "end_of_month months date",
+        None,
+    ),
     // Compares with case (ECMA-376 Part 1 §18.17.7.112), where `==` ignores it.
     Entry {
         name: "exact",
@@ -327,6 +351,7 @@ const TABLE: &[Entry] = &[
     reduction("minimum", Builtin::Minimum, "minimum x", "MIN"),
     // The remainder takes the sign of the divisor (ECMA-376 Part 1 §18.17.7.218).
     by("mod", Builtin::Mod, "mod divisor x", Some("MOD")),
+    numeric("month_of", Builtin::MonthOf, "month_of date", "MONTH"),
     Entry {
         name: "na",
         builtin: Builtin::Na,
@@ -411,6 +436,7 @@ const TABLE: &[Entry] = &[
     textual("trim", Builtin::Trim, "trim x", "TRIM"),
     textual("upper", Builtin::Upper, "upper x", "UPPER"),
     logical("xor", Builtin::Xor, "xor x", "_xlfn.XOR"),
+    numeric("year_of", Builtin::YearOf, "year_of date", "YEAR"),
 ];
 
 impl Builtin {

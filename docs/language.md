@@ -234,6 +234,9 @@ either does, as in arithmetic.
 | `trim x` | text without spaces at either end, and one between words | `TRIM(x)` |
 | `upper x`, `lower x` | text in upper or lower case | `UPPER(x)`, `LOWER(x)` |
 | `exact a b` | whether two texts are the same, case and all; `==` ignores case | `EXACT(a,b)` |
+| `date_of y m d` | the date of a year, month and day | `DATE(y,m,d)` |
+| `year_of x`, `month_of x` | the year or month of a date | `YEAR(x)`, `MONTH(x)` |
+| `end_of_month k x` | the last day of the month k months after x | `DATE(YEAR(x),MONTH(x)+k+1,0)` |
 | `lookup k ks vs` | the value beside each key, shaped as `k` | `XLOOKUP(k,ks,vs)` |
 | `column "c" t` | the column called `c` of the table `t` | `INDEX(t,0,j)` |
 | `na` | the error `#N/A` | `NA()` |
@@ -243,6 +246,12 @@ either does, as in arithmetic.
 from column to column, or down a column, from row to row, where they are written `DROP(x,-k)`
 and so on, and a seed is stacked with `VSTACK`. A range of more than one row and column needs
 the direction written straight after the function's name: `tail across grid`, `lag down 1 grid`.
+
+A date is a number: the serial day of the 1900 date system, in which the workbook is always
+written, so 1 January 2026 is 46023. `date_of` lets its month and day run over, so
+`date_of 2026 13 0` is 31 December 2026, and reads a year from 0 to 99 as 1900 and that year, as
+the app does. `end_of_month` is written with DATE because the app's EOMONTH gives `#VALUE!` for a
+range of dates.
 
 `min` and `max` work position by position, like Haskell's; `minimum` and `maximum` reduce a range
 to one value. In the same way, `&&` and `||` work position by position, and `all`, `any` and

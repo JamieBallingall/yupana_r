@@ -501,6 +501,13 @@ is provisional. [docs/language.md](docs/language.md) describes 0.2 as it is buil
   #VALUE! for a range where it takes a number. `mod d x` takes the sign of `d`, as MOD does.
   CEILING.MATH and FLOOR.MATH are written with the `_xlfn.` prefix of [MS-XLSX] §2.2.3, and
   ignore the sign of a multiple.
+- **Dates** (decided 2026-11-04) are numbers, the serial days of the 1900 date system, which
+  the workbook always uses (ECMA-376 Part 1 §18.2.28, `date1904` left at its default). The
+  functions are `date_of`, `year_of`, `month_of` and `end_of_month`, so that `year`, `month`
+  and `date`, the most natural names for a timeline's rows, stay free for bindings.
+  `end_of_month k x` is written `DATE(YEAR(x),MONTH(x)+k+1,0)`, by DATE's rule that day 0 is the
+  last day of the month before (§18.17.7.74), because the app's EOMONTH gives #VALUE! for a
+  range of dates.
 - **Types are worked out** for every formula, value and local where its cells hold one type, and
   written into its signature from Infer on. Arithmetic on text is an error. `na` builds `#N/A`,
   whose type goes with any other.
@@ -950,7 +957,7 @@ Where 0.1 or 0.2 gives an answer, it follows in italics; [Built for 0.1](#built-
 21. **Time aggregation:** rolling monthly ranges up to annual ones (`sum revenue by year`), which
     maps one size variable onto another.
 22. **The function library:** which of the app's functions stage 1 supports. *0.1: eighteen. 0.2:
-    the thirty-eight in [docs/language.md](docs/language.md).*
+    the forty-two in [docs/language.md](docs/language.md).*
 23. **Deterministic output:** does the same input always give byte-identical xlsx? *0.1 and 0.2:
     yes.*
 24. **Widths with another font:** a width in pixels is exact only with the default font, whose

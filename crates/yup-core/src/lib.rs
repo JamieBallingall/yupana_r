@@ -678,6 +678,27 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
     }
 
     #[test]
+    fn dates_are_serial_days_of_the_1900_date_system() {
+        let source = "opening : Formula at main $B$2\nopening = date_of 2026 [1, 2] 15\nyears : \
+                      Formula opening down 1\nyears = year_of opening\nmonths : Formula years \
+                      down 1\nmonths = month_of opening\nends : Formula months down 1\nends = \
+                      end_of_month 0 opening\nlater : Formula ends down 1\nlater = end_of_month 2 \
+                      (opening + 1)\n";
+        let listing = text(source, Step::Lower);
+        for line in [
+            "  B2     =DATE(2026,{1,2},15)",
+            "  B3     =YEAR(opening)",
+            "  B4     =MONTH(opening)",
+            "  B5     =DATE(YEAR(opening),MONTH(opening)+1,0)",
+            "  B6     =_xlfn.LET(_xlpm._a,opening+1,DATE(YEAR(_xlpm._a),MONTH(_xlpm._a)+3,0))",
+        ] {
+            assert!(listing.contains(line), "{line}\n{listing}");
+        }
+        let package = text(source, Step::Package);
+        assert!(!package.contains("date1904"), "{package}");
+    }
+
+    #[test]
     fn text_is_trimmed_cased_and_compared() {
         let source = "name : Value at main $B$2\nname = \"  Garden   tools \"\ntrimmed : Formula \
                       name down 1\ntrimmed = trim name\nshouted : Formula trimmed down 1\nshouted = \

@@ -999,6 +999,34 @@ impl Lowerer<'_> {
                     call("_xlfn.LET", &[value.clone(), x, nearest(value)])
                 }
             }
+            // The last day of the month k months on: day 0 of the month after it,
+            // DATE(YEAR(x),MONTH(x)+k+1,0), since DATE counts a day from the last day of the month
+            // before (ECMA-376 Part 1 §18.17.7.74).
+            Builtin::EndOfMonth => {
+                // A whole number of months is added to the 1 here, rather than written out.
+                let after = match args[0].integer() {
+                    Some(months) => Formula::atom((months + 1).to_string()),
+                    None => binary(BinOp::Add, &arg(0)?, &Formula::atom("1")),
+                };
+                let x = arg(1)?;
+                let end = |x: Formula| {
+                    let month = match args[0].integer() {
+                        Some(-1) => call("MONTH", std::slice::from_ref(&x)),
+                        _ => binary(
+                            BinOp::Add,
+                            &call("MONTH", std::slice::from_ref(&x)),
+                            &after,
+                        ),
+                    };
+                    call("DATE", &[call("YEAR", &[x]), month, Formula::atom("0")])
+                };
+                if x.is_simple() {
+                    end(x)
+                } else {
+                    let value = Formula::atom(format!("_xlpm.{}", TOOL_NAMES[1]));
+                    call("_xlfn.LET", &[value.clone(), x, end(value)])
+                }
+            }
             Builtin::Na => call("NA", &[]),
             Builtin::Csv => unreachable!("Resolve allows csv only as a value's definition"),
             _ => unreachable!("a function written as the app's is written above"),
