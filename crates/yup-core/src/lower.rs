@@ -1027,6 +1027,18 @@ impl Lowerer<'_> {
                     call("_xlfn.LET", &[value.clone(), x, end(value)])
                 }
             }
+            // A condition at each position, rather than SUMIFS's criteria in text.
+            Builtin::SumIf => call(
+                "SUM",
+                &[call("IF", &[arg(0)?, arg(1)?, Formula::atom("0")])],
+            ),
+            Builtin::CountIf => call(
+                "SUM",
+                &[call(
+                    "IF",
+                    &[arg(0)?, Formula::atom("1"), Formula::atom("0")],
+                )],
+            ),
             Builtin::Na => call("NA", &[]),
             Builtin::Csv => unreachable!("Resolve allows csv only as a value's definition"),
             _ => unreachable!("a function written as the app's is written above"),

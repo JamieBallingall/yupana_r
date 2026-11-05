@@ -216,6 +216,7 @@ either does, as in arithmetic.
 | `init x` | x without its last position | `DROP(x,,-1)` |
 | `sum x`, `average x` | one value from all of x | `SUM(x)`, `AVERAGE(x)` |
 | `minimum x`, `maximum x` | one value from all of x | `MIN(x)`, `MAX(x)` |
+| `sum_if c x`, `count_if c` | the sum of x, or the count, where c holds | `SUM(IF(c,x,0))` |
 | `sum_columns x` | the sum of each column, as one row | `BYCOL(x,LAMBDA(x,SUM(x)))` |
 | `sum_rows x` | the sum of each row, as one column | `BYROW(x,LAMBDA(x,SUM(x)))` |
 | `min a b`, `max a b` | the smaller or larger at each position | `IF(a<b,a,b)` |

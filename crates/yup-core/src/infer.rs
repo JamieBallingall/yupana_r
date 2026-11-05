@@ -520,10 +520,8 @@ impl Infer<'_> {
     ) -> Inferred {
         match builtin.kind() {
             Kind::Positionwise { fixed } => return self.positionwise(expr, builtin, fixed, args),
-            Kind::Reduce => {
-                for arg in args {
-                    self.shape(arg)?;
-                }
+            Kind::Reduce { fixed } => {
+                self.positionwise(expr, builtin, fixed, args)?;
                 return Ok(Shape::scalar());
             }
             Kind::Own => {}

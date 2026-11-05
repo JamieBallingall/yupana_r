@@ -24,6 +24,7 @@ pub enum Builtin {
     Ceiling,
     CeilingTo,
     Column,
+    CountIf,
     Csv,
     DateOf,
     EndOfMonth,
@@ -52,6 +53,7 @@ pub enum Builtin {
     Sqrt,
     Sum,
     SumColumns,
+    SumIf,
     SumRows,
     Tail,
     Transpose,
@@ -68,8 +70,10 @@ pub enum Kind {
     /// the rest combine as an operator's operands do, and give the result its shape. Such a
     /// function may take part in a value carried from one position to the next.
     Positionwise { fixed: usize },
-    /// One value from all of its argument.
-    Reduce,
+    /// One value from all of its arguments. The first `fixed` say how much and are single
+    /// values; the rest line up position by position, as a function's that works position by
+    /// position do, before they are reduced.
+    Reduce { fixed: usize },
     /// A rule of its own, in Infer.
     Own,
 }
@@ -148,7 +152,7 @@ const fn reduction(
         builtin,
         usage,
         takes: &[NUMBER],
-        kind: Kind::Reduce,
+        kind: Kind::Reduce { fixed: 0 },
         gives: Gives::Always(CellType::Number),
         app: app(app_name, &[0]),
     }
@@ -185,7 +189,7 @@ const fn logical(
         builtin,
         usage,
         takes: &[LOGICAL],
-        kind: Kind::Reduce,
+        kind: Kind::Reduce { fixed: 0 },
         gives: Gives::Always(CellType::Logical),
         app: app(app_name, &[0]),
     }
@@ -252,6 +256,18 @@ const TABLE: &[Entry] = &[
         kind: Kind::Positionwise { fixed: 0 },
         gives: Gives::Always(CellType::Number),
         app: app("DATE", &[0, 1, 2]),
+    },
+    // A condition is a logical at each position, such as `region == "North" && year >= 2026`,
+    // rather than the app's criteria in text, where `*` and `?` are wildcards. Lower writes
+    // `SUM(IF(cond,1,0))`.
+    Entry {
+        name: "count_if",
+        builtin: Builtin::CountIf,
+        usage: "count_if condition",
+        takes: &[LOGICAL],
+        kind: Kind::Reduce { fixed: 0 },
+        gives: Gives::Always(CellType::Number),
+        app: None,
     },
     Entry {
         name: "csv",
@@ -405,6 +421,16 @@ const TABLE: &[Entry] = &[
         gives: Gives::Always(CellType::Number),
         app: None,
     },
+    // Lower writes `SUM(IF(cond,x,0))`.
+    Entry {
+        name: "sum_if",
+        builtin: Builtin::SumIf,
+        usage: "sum_if condition x",
+        takes: &[LOGICAL, NUMBER],
+        kind: Kind::Reduce { fixed: 0 },
+        gives: Gives::Always(CellType::Number),
+        app: None,
+    },
     Entry {
         name: "sum_rows",
         builtin: Builtin::SumRows,
@@ -501,7 +527,7 @@ mod tests {
             let builtin = entry.builtin;
             assert_eq!(Builtin::lookup(entry.name), Some(builtin), "{}", entry.name);
             assert!(entry.usage.starts_with(entry.name), "{}", entry.name);
-            if let Kind::Positionwise { fixed } = entry.kind {
+            if let Kind::Positionwise { fixed } | Kind::Reduce { fixed } = entry.kind {
                 assert!(fixed < entry.takes.len(), "{}", entry.name);
             }
             if let Gives::Like(index) = entry.gives {

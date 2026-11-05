@@ -508,6 +508,12 @@ is provisional. [docs/language.md](docs/language.md) describes 0.2 as it is buil
   `end_of_month k x` is written `DATE(YEAR(x),MONTH(x)+k+1,0)`, by DATE's rule that day 0 is the
   last day of the month before (§18.17.7.74), because the app's EOMONTH gives #VALUE! for a
   range of dates.
+- **Conditional sums** (decided 2026-11-04). `sum_if c x` and `count_if c` take a condition
+  that is a logical at each position, such as `region == "North" && year >= 2026`, lined up with
+  `x`. The app's SUMIFS and COUNTIFS take criteria as text instead, where `">5"` is a comparison
+  and `*`, `?` and `~` are wildcards in an equality, which is a trap for a value that holds them.
+  They are written `SUM(IF(c,x,0))` and `SUM(IF(c,1,0))`. Writing SUMIFS where a condition fits
+  its criteria exactly may come later.
 - **Types are worked out** for every formula, value and local where its cells hold one type, and
   written into its signature from Infer on. Arithmetic on text is an error. `na` builds `#N/A`,
   whose type goes with any other.
@@ -957,7 +963,7 @@ Where 0.1 or 0.2 gives an answer, it follows in italics; [Built for 0.1](#built-
 21. **Time aggregation:** rolling monthly ranges up to annual ones (`sum revenue by year`), which
     maps one size variable onto another.
 22. **The function library:** which of the app's functions stage 1 supports. *0.1: eighteen. 0.2:
-    the forty-two in [docs/language.md](docs/language.md).*
+    the forty-four in [docs/language.md](docs/language.md).*
 23. **Deterministic output:** does the same input always give byte-identical xlsx? *0.1 and 0.2:
     yes.*
 24. **Widths with another font:** a width in pixels is exact only with the default font, whose

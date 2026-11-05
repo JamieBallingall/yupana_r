@@ -678,6 +678,32 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
     }
 
     #[test]
+    fn conditions_sum_and_count_where_they_hold() {
+        let source = "region : Formula at main $B$2\nregion = [\"North\", \"South\", \"North\"]\n\
+                      revenue : Formula region down 1\nrevenue = [10, 20, 30]\nnorthern : \
+                      Formula revenue down 1\nnorthern = sum_if (region == \"North\") revenue\n\
+                      how_many : Formula northern down 1\nhow_many = count_if (revenue > 15)\n";
+        let listing = text(source, Step::Lower);
+        for line in [
+            "  B4     =SUM(IF(region=\"North\",revenue,0))",
+            "  B5     =SUM(IF(revenue>15,1,0))",
+        ] {
+            assert!(listing.contains(line), "{line}\n{listing}");
+        }
+        assert_eq!(
+            errors(
+                "a : Formula at main $B$2\na = [1, 2, 3]\nb : Formula a down 1\nb = sum_if (a > 1) \
+                 [1, 2]\n",
+                Step::Infer
+            ),
+            [
+                "9:5: error: the two arguments of `sum_if` have different numbers of columns: 3 \
+                 and 2"
+            ]
+        );
+    }
+
+    #[test]
     fn dates_are_serial_days_of_the_1900_date_system() {
         let source = "opening : Formula at main $B$2\nopening = date_of 2026 [1, 2] 15\nyears : \
                       Formula opening down 1\nyears = year_of opening\nmonths : Formula years \
