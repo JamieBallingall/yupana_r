@@ -231,6 +231,9 @@ either does, as in arithmetic.
 | `transpose x` | rows and columns swapped | `TRANSPOSE(x)` |
 | `all x`, `any x`, `xor x` | one logical from all of x | `AND(x)`, `OR(x)`, `XOR(x)` |
 | `if_error v x` | x, or v at each position where x is an error | `IFERROR(x,v)` |
+| `trim x` | text without spaces at either end, and one between words | `TRIM(x)` |
+| `upper x`, `lower x` | text in upper or lower case | `UPPER(x)`, `LOWER(x)` |
+| `exact a b` | whether two texts are the same, case and all; `==` ignores case | `EXACT(a,b)` |
 | `lookup k ks vs` | the value beside each key, shaped as `k` | `XLOOKUP(k,ks,vs)` |
 | `column "c" t` | the column called `c` of the table `t` | `INDEX(t,0,j)` |
 | `na` | the error `#N/A` | `NA()` |

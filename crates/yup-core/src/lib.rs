@@ -678,6 +678,27 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
     }
 
     #[test]
+    fn text_is_trimmed_cased_and_compared() {
+        let source = "name : Value at main $B$2\nname = \"  Garden   tools \"\ntrimmed : Formula \
+                      name down 1\ntrimmed = trim name\nshouted : Formula trimmed down 1\nshouted = \
+                      upper trimmed\nquiet : Formula shouted down 1\nquiet = lower trimmed\nsame : \
+                      Formula quiet down 1\nsame = exact shouted quiet\n";
+        let listing = text(source, Step::Lower);
+        for line in [
+            "  B3     =TRIM(name)",
+            "  B4     =UPPER(trimmed)",
+            "  B5     =LOWER(trimmed)",
+            "  B6     =EXACT(shouted,quiet)",
+        ] {
+            assert!(listing.contains(line), "{line}\n{listing}");
+        }
+        assert_eq!(
+            errors("t : Formula at main $B$2\nt = upper 5\n", Step::Infer),
+            ["7:11: error: `upper` takes Text here, and this is Number"]
+        );
+    }
+
+    #[test]
     fn logicals_reduce_and_errors_fall_back() {
         let source = "x : Formula at main $B$2\nx = [1, 0, -2, 4]\nevery : Formula x down 1\nevery \
                       = all (x > 0)\nsome : Formula every down 1\nsome = any (x > 0)\nodd : \

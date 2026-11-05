@@ -25,6 +25,7 @@ pub enum Builtin {
     CeilingTo,
     Column,
     Csv,
+    Exact,
     Exp,
     Floor,
     FloorTo,
@@ -33,6 +34,7 @@ pub enum Builtin {
     Lag,
     Ln,
     Lookup,
+    Lower,
     Max,
     Maximum,
     Min,
@@ -50,6 +52,8 @@ pub enum Builtin {
     SumRows,
     Tail,
     Transpose,
+    Trim,
+    Upper,
     Xor,
 }
 
@@ -146,6 +150,24 @@ const fn reduction(
     }
 }
 
+/// A function of one text, position by position, that is the app's of the given name.
+const fn textual(
+    name: &'static str,
+    builtin: Builtin,
+    usage: &'static str,
+    app_name: &'static str,
+) -> Entry {
+    Entry {
+        name,
+        builtin,
+        usage,
+        takes: &[TEXT],
+        kind: Kind::Positionwise { fixed: 0 },
+        gives: Gives::Always(CellType::Text),
+        app: app(app_name, &[0]),
+    }
+}
+
 /// A function that reduces a range of logicals to one, and is the app's of the given name. The
 /// app's AND, OR and XOR take a whole range; `&&` and `||` work position by position.
 const fn logical(
@@ -224,6 +246,16 @@ const TABLE: &[Entry] = &[
         gives: Gives::Own,
         app: None,
     },
+    // Compares with case (ECMA-376 Part 1 §18.17.7.112), where `==` ignores it.
+    Entry {
+        name: "exact",
+        builtin: Builtin::Exact,
+        usage: "exact a b",
+        takes: &[TEXT, TEXT],
+        kind: Kind::Positionwise { fixed: 0 },
+        gives: Gives::Always(CellType::Logical),
+        app: app("EXACT", &[0, 1]),
+    },
     numeric("exp", Builtin::Exp, "exp x", "EXP"),
     numeric("floor", Builtin::Floor, "floor x", "INT"),
     by(
@@ -270,6 +302,7 @@ const TABLE: &[Entry] = &[
         gives: Gives::Like(2),
         app: app("_xlfn.XLOOKUP", &[0, 1, 2]),
     },
+    textual("lower", Builtin::Lower, "lower x", "LOWER"),
     // The app's MAX and MIN reduce whole ranges, so `max` and `min`, which work position by
     // position, are written by Lower as a choice between the two.
     Entry {
@@ -374,6 +407,9 @@ const TABLE: &[Entry] = &[
         gives: Gives::Like(0),
         app: None,
     },
+    // Removes spaces at either end, and leaves one between words (§18.17.7.329).
+    textual("trim", Builtin::Trim, "trim x", "TRIM"),
+    textual("upper", Builtin::Upper, "upper x", "UPPER"),
     logical("xor", Builtin::Xor, "xor x", "_xlfn.XOR"),
 ];
 
