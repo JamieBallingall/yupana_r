@@ -491,6 +491,16 @@ is provisional. [docs/language.md](docs/language.md) describes 0.2 as it is buil
   `_xl` (Part 1 §18.2.5, note m), where a `.yup` name begins with a letter. `History`, the sheet
   name the app keeps for itself, is a rule for sheet names, which are a sheet's `name` and not a
   binding's.
+- **Rounding says its direction** (decided 2026-11-04). The app's names disagree about "up":
+  ROUNDUP goes away from zero, and CEILING.MATH toward plus infinity, so ROUNDUP(-1.5,0) is -2
+  where a ceiling is -1. `.yup` names each direction instead: `round` (the nearest, a half away
+  from zero), `round_away` and `round_toward_zero` to digits, `floor` and `ceiling` to whole
+  numbers, and `round_to`, `floor_to` and `ceiling_to` to multiples. `round_to` is written
+  `SIGN(x)*FLOOR.MATH(ABS(x)+ABS(m)/2,ABS(m))` rather than with MROUND, which gives #NUM! when
+  the number and the multiple differ in sign (ECMA-376 Part 1 §18.17.7.221) and, in the app,
+  #VALUE! for a range where it takes a number. `mod d x` takes the sign of `d`, as MOD does.
+  CEILING.MATH and FLOOR.MATH are written with the `_xlfn.` prefix of [MS-XLSX] §2.2.3, and
+  ignore the sign of a multiple.
 - **Types are worked out** for every formula, value and local where its cells hold one type, and
   written into its signature from Infer on. Arithmetic on text is an error. `na` builds `#N/A`,
   whose type goes with any other.
@@ -940,7 +950,7 @@ Where 0.1 or 0.2 gives an answer, it follows in italics; [Built for 0.1](#built-
 21. **Time aggregation:** rolling monthly ranges up to annual ones (`sum revenue by year`), which
     maps one size variable onto another.
 22. **The function library:** which of the app's functions stage 1 supports. *0.1: eighteen. 0.2:
-    the twenty-two in [docs/language.md](docs/language.md).*
+    the thirty in [docs/language.md](docs/language.md).*
 23. **Deterministic output:** does the same input always give byte-identical xlsx? *0.1 and 0.2:
     yes.*
 24. **Widths with another font:** a width in pixels is exact only with the default font, whose

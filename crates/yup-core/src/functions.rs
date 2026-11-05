@@ -19,9 +19,13 @@ use crate::syntax::CellType;
 pub enum Builtin {
     Abs,
     Average,
+    Ceiling,
+    CeilingTo,
     Column,
     Csv,
     Exp,
+    Floor,
+    FloorTo,
     Init,
     Lag,
     Ln,
@@ -30,9 +34,13 @@ pub enum Builtin {
     Maximum,
     Min,
     Minimum,
+    Mod,
     Na,
     Not,
     Round,
+    RoundAway,
+    RoundTo,
+    RoundTowardZero,
     Sqrt,
     Sum,
     SumColumns,
@@ -131,9 +139,45 @@ const fn reduction(
     }
 }
 
+/// A function of one number, position by position, after one value that says how much: `round
+/// 2 x` is `ROUND(x,2)`.
+const fn by(
+    name: &'static str,
+    builtin: Builtin,
+    usage: &'static str,
+    app_name: Option<&'static str>,
+) -> Entry {
+    Entry {
+        name,
+        builtin,
+        usage,
+        takes: &[NUMBER, NUMBER],
+        kind: Kind::Positionwise { fixed: 1 },
+        gives: Gives::Always(CellType::Number),
+        app: match app_name {
+            Some(app_name) => app(app_name, &[1, 0]),
+            None => None,
+        },
+    }
+}
+
+// Rounding says its direction in its name. The app's ROUNDUP goes away from zero, while its
+// CEILING.MATH goes toward plus infinity, so neither "up" nor "down" appears in a name here.
 const TABLE: &[Entry] = &[
     numeric("abs", Builtin::Abs, "abs x", "ABS"),
     reduction("average", Builtin::Average, "average x", "AVERAGE"),
+    numeric(
+        "ceiling",
+        Builtin::Ceiling,
+        "ceiling x",
+        "_xlfn.CEILING.MATH",
+    ),
+    by(
+        "ceiling_to",
+        Builtin::CeilingTo,
+        "ceiling_to multiple x",
+        Some("_xlfn.CEILING.MATH"),
+    ),
     Entry {
         name: "column",
         builtin: Builtin::Column,
@@ -153,6 +197,13 @@ const TABLE: &[Entry] = &[
         app: None,
     },
     numeric("exp", Builtin::Exp, "exp x", "EXP"),
+    numeric("floor", Builtin::Floor, "floor x", "INT"),
+    by(
+        "floor_to",
+        Builtin::FloorTo,
+        "floor_to multiple x",
+        Some("_xlfn.FLOOR.MATH"),
+    ),
     Entry {
         name: "init",
         builtin: Builtin::Init,
@@ -203,6 +254,8 @@ const TABLE: &[Entry] = &[
         app: None,
     },
     reduction("minimum", Builtin::Minimum, "minimum x", "MIN"),
+    // The remainder takes the sign of the divisor (ECMA-376 Part 1 §18.17.7.218).
+    by("mod", Builtin::Mod, "mod divisor x", Some("MOD")),
     Entry {
         name: "na",
         builtin: Builtin::Na,
@@ -230,6 +283,21 @@ const TABLE: &[Entry] = &[
         gives: Gives::Always(CellType::Number),
         app: app("ROUND", &[1, 0]),
     },
+    by(
+        "round_away",
+        Builtin::RoundAway,
+        "round_away digits x",
+        Some("ROUNDUP"),
+    ),
+    // Written by Lower with FLOOR.MATH: the app's MROUND gives #NUM! for a number and a multiple
+    // of different signs (§18.17.7.221), and #VALUE! for a range where it takes a number.
+    by("round_to", Builtin::RoundTo, "round_to multiple x", None),
+    by(
+        "round_toward_zero",
+        Builtin::RoundTowardZero,
+        "round_toward_zero digits x",
+        Some("ROUNDDOWN"),
+    ),
     numeric("sqrt", Builtin::Sqrt, "sqrt x", "SQRT"),
     reduction("sum", Builtin::Sum, "sum x", "SUM"),
     Entry {

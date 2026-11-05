@@ -980,6 +980,25 @@ impl Lowerer<'_> {
                     ],
                 )
             }
+            // The nearest multiple, a half away from zero, whatever the signs of x and m:
+            // SIGN(x)*FLOOR.MATH(ABS(x)+ABS(m)/2,ABS(m)). MROUND would say the same of single
+            // values, but gives #VALUE! for a range where it takes a number.
+            Builtin::RoundTo => {
+                let (multiple, x) = (arg(0)?, arg(1)?);
+                let size = call("ABS", &[multiple]);
+                let nearest = |x: Formula| {
+                    let half = binary(BinOp::Div, &size, &Formula::atom("2"));
+                    let shifted = binary(BinOp::Add, &call("ABS", std::slice::from_ref(&x)), &half);
+                    let floor = call("_xlfn.FLOOR.MATH", &[shifted, size.clone()]);
+                    binary(BinOp::Mul, &call("SIGN", &[x]), &floor)
+                };
+                if x.is_simple() {
+                    nearest(x)
+                } else {
+                    let value = Formula::atom(format!("_xlpm.{}", TOOL_NAMES[1]));
+                    call("_xlfn.LET", &[value.clone(), x, nearest(value)])
+                }
+            }
             Builtin::Na => call("NA", &[]),
             Builtin::Csv => unreachable!("Resolve allows csv only as a value's definition"),
             _ => unreachable!("a function written as the app's is written above"),

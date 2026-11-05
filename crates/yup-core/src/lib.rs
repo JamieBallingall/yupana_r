@@ -678,6 +678,50 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
     }
 
     #[test]
+    fn rounding_names_its_direction() {
+        let source = "x : Value at main $B$2
+x = -1.25
+away : Formula x down 1
+away =                       round_away 1 x
+toward : Formula away down 1
+toward = round_toward_zero 1                       x
+whole_down : Formula toward down 1
+whole_down = floor x
+whole_up :                       Formula whole_down down 1
+whole_up = ceiling x
+halves : Formula whole_up                       down 1
+halves = round_to 0.5 x
+halves_down : Formula halves down 1
+                      halves_down = floor_to 0.5 x
+halves_up : Formula halves_down down 1
+                      halves_up = ceiling_to 0.5 x
+remainder : Formula halves_up down 1
+                      remainder = mod 3 x
+doubled : Formula remainder down 1
+doubled =                       round_to 0.5 (x * 2)
+";
+        let listing = text(source, Step::Lower);
+        for line in [
+            "  B3     =ROUNDUP(x,1)",
+            "  B4     =ROUNDDOWN(x,1)",
+            "  B5     =INT(x)",
+            "  B6     =_xlfn.CEILING.MATH(x)",
+            "  B7     =SIGN(x)*_xlfn.FLOOR.MATH(ABS(x)+ABS(0.5)/2,ABS(0.5))",
+            "  B8     =_xlfn.FLOOR.MATH(x,0.5)",
+            "  B9     =_xlfn.CEILING.MATH(x,0.5)",
+            "  B10    =MOD(x,3)",
+            "  B11    =_xlfn.LET(_xlpm._a,x*2,SIGN(_xlpm._a)*_xlfn.FLOOR.MATH(ABS(_xlpm._a)+ABS(0.5)/2,\
+             ABS(0.5)))",
+        ] {
+            assert!(
+                listing.contains(line),
+                "{line}
+{listing}"
+            );
+        }
+    }
+
+    #[test]
     fn an_empty_range_writes_nothing_and_sizes_its_columns() {
         let source = "title : Label width 160 at main $B$2\ntitle = \"Title\"\ngap : Empty width \
                       16 size [1, 2] title right 1\nvalue : Value gap right 1\nvalue = 5\n";

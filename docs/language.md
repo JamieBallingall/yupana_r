@@ -221,7 +221,13 @@ either does, as in arithmetic.
 | `min a b`, `max a b` | the smaller or larger at each position | `IF(a<b,a,b)` |
 | `abs x`, `exp x`, `ln x`, `sqrt x` | the function at each position | `ABS(x)` and so on |
 | `not x` | logical not at each position | `NOT(x)` |
-| `round d x` | x rounded to d digits | `ROUND(x,d)` |
+| `round d x` | x rounded to d digits, the nearest, a half away from zero | `ROUND(x,d)` |
+| `round_away d x` | x rounded to d digits, away from zero | `ROUNDUP(x,d)` |
+| `round_toward_zero d x` | x rounded to d digits, toward zero | `ROUNDDOWN(x,d)` |
+| `floor x`, `ceiling x` | a whole number, toward minus or plus infinity | `INT`, `CEILING.MATH` |
+| `round_to m x` | the nearest multiple of m, a half away from zero | `SIGN(x)*FLOOR.MATH(…)` |
+| `floor_to m x`, `ceiling_to m x` | a multiple of m, toward minus or plus infinity | `FLOOR.MATH` |
+| `mod d x` | the remainder of x divided by d, with the sign of d | `MOD(x,d)` |
 | `transpose x` | rows and columns swapped | `TRANSPOSE(x)` |
 | `lookup k ks vs` | the value beside each key, shaped as `k` | `XLOOKUP(k,ks,vs)` |
 | `column "c" t` | the column called `c` of the table `t` | `INDEX(t,0,j)` |
