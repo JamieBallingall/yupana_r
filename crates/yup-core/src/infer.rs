@@ -1173,6 +1173,9 @@ impl Infer<'_> {
                     Some(builtin) => match (builtin.gives(), builtin) {
                         (Gives::Always(ty), _) => Ty::Known(ty),
                         (Gives::Like(index), _) => types[index],
+                        (Gives::Join, _) => {
+                            types.iter().fold(Ty::Never, |ty, &next| join(ty, next))
+                        }
                         (Gives::Own, Builtin::Lag) => join(types[1], seed),
                         (Gives::Own, Builtin::Column) => self.column_type(&args[0], &args[1]),
                         (Gives::Own, Builtin::Csv) => Ty::Any,

@@ -18,6 +18,8 @@ use crate::syntax::CellType;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Builtin {
     Abs,
+    All,
+    Any,
     Average,
     Ceiling,
     CeilingTo,
@@ -26,6 +28,7 @@ pub enum Builtin {
     Exp,
     Floor,
     FloorTo,
+    IfError,
     Init,
     Lag,
     Ln,
@@ -47,6 +50,7 @@ pub enum Builtin {
     SumRows,
     Tail,
     Transpose,
+    Xor,
 }
 
 /// How a function's result is shaped by its arguments.
@@ -69,6 +73,8 @@ pub enum Gives {
     Always(CellType),
     /// What the argument at this index holds.
     Like(usize),
+    /// What all the arguments hold, where that is one type.
+    Join,
     /// A rule of its own, in Infer.
     Own,
 }
@@ -96,6 +102,7 @@ struct Entry {
 }
 
 const NUMBER: Option<CellType> = Some(CellType::Number);
+const LOGICAL: Option<CellType> = Some(CellType::Logical);
 const TEXT: Option<CellType> = Some(CellType::Text);
 const ANY: Option<CellType> = None;
 
@@ -139,6 +146,25 @@ const fn reduction(
     }
 }
 
+/// A function that reduces a range of logicals to one, and is the app's of the given name. The
+/// app's AND, OR and XOR take a whole range; `&&` and `||` work position by position.
+const fn logical(
+    name: &'static str,
+    builtin: Builtin,
+    usage: &'static str,
+    app_name: &'static str,
+) -> Entry {
+    Entry {
+        name,
+        builtin,
+        usage,
+        takes: &[LOGICAL],
+        kind: Kind::Reduce,
+        gives: Gives::Always(CellType::Logical),
+        app: app(app_name, &[0]),
+    }
+}
+
 /// A function of one number, position by position, after one value that says how much: `round
 /// 2 x` is `ROUND(x,2)`.
 const fn by(
@@ -165,6 +191,8 @@ const fn by(
 // CEILING.MATH goes toward plus infinity, so neither "up" nor "down" appears in a name here.
 const TABLE: &[Entry] = &[
     numeric("abs", Builtin::Abs, "abs x", "ABS"),
+    logical("all", Builtin::All, "all x", "AND"),
+    logical("any", Builtin::Any, "any x", "OR"),
     reduction("average", Builtin::Average, "average x", "AVERAGE"),
     numeric(
         "ceiling",
@@ -204,6 +232,16 @@ const TABLE: &[Entry] = &[
         "floor_to multiple x",
         Some("_xlfn.FLOOR.MATH"),
     ),
+    // The fallback comes first, as an argument that says what to do, and the value last.
+    Entry {
+        name: "if_error",
+        builtin: Builtin::IfError,
+        usage: "if_error fallback x",
+        takes: &[ANY, ANY],
+        kind: Kind::Positionwise { fixed: 0 },
+        gives: Gives::Join,
+        app: app("IFERROR", &[1, 0]),
+    },
     Entry {
         name: "init",
         builtin: Builtin::Init,
@@ -336,6 +374,7 @@ const TABLE: &[Entry] = &[
         gives: Gives::Like(0),
         app: None,
     },
+    logical("xor", Builtin::Xor, "xor x", "_xlfn.XOR"),
 ];
 
 impl Builtin {

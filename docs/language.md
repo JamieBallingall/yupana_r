@@ -229,6 +229,8 @@ either does, as in arithmetic.
 | `floor_to m x`, `ceiling_to m x` | a multiple of m, toward minus or plus infinity | `FLOOR.MATH` |
 | `mod d x` | the remainder of x divided by d, with the sign of d | `MOD(x,d)` |
 | `transpose x` | rows and columns swapped | `TRANSPOSE(x)` |
+| `all x`, `any x`, `xor x` | one logical from all of x | `AND(x)`, `OR(x)`, `XOR(x)` |
+| `if_error v x` | x, or v at each position where x is an error | `IFERROR(x,v)` |
 | `lookup k ks vs` | the value beside each key, shaped as `k` | `XLOOKUP(k,ks,vs)` |
 | `column "c" t` | the column called `c` of the table `t` | `INDEX(t,0,j)` |
 | `na` | the error `#N/A` | `NA()` |
@@ -240,9 +242,10 @@ and so on, and a seed is stacked with `VSTACK`. A range of more than one row and
 the direction written straight after the function's name: `tail across grid`, `lag down 1 grid`.
 
 `min` and `max` work position by position, like Haskell's; `minimum` and `maximum` reduce a range
-to one value. `&&` and `||` work position by position too. The app's AND and OR reduce a range
-to one value, so they are written with arithmetic on the logicals: `a && b` as `(a)*(b)<>0`, and
-`a || b` as `(a)+(b)<>0`.
+to one value. In the same way, `&&` and `||` work position by position, and `all`, `any` and
+`xor` reduce a range of logicals to one, as the app's AND, OR and XOR do. So `&&` and `||` are
+written with arithmetic on the logicals: `a && b` as `(a)*(b)<>0`, and `a || b` as
+`(a)+(b)<>0`.
 
 ## Sizes and spans
 

@@ -678,6 +678,27 @@ latest = lookup (maximum (column \"year\" sales)) (column \"year\" sales) (colum
     }
 
     #[test]
+    fn logicals_reduce_and_errors_fall_back() {
+        let source = "x : Formula at main $B$2\nx = [1, 0, -2, 4]\nevery : Formula x down 1\nevery \
+                      = all (x > 0)\nsome : Formula every down 1\nsome = any (x > 0)\nodd : \
+                      Formula some down 1\nodd = xor (x > 0)\nratio : Formula odd down 1\nratio = \
+                      if_error 0 (10 / x)\n";
+        let listing = text(source, Step::Lower);
+        for line in [
+            "  B3     =AND(x>0)",
+            "  B4     =OR(x>0)",
+            "  B5     =_xlfn.XOR(x>0)",
+            "  B6     =IFERROR(10/x,0)",
+        ] {
+            assert!(listing.contains(line), "{line}\n{listing}");
+        }
+        assert_eq!(
+            errors("t : Formula at main $B$2\nt = all \"yes\"\n", Step::Infer),
+            ["7:9: error: `all` takes Logical here, and this is Text"]
+        );
+    }
+
+    #[test]
     fn rounding_names_its_direction() {
         let source = "x : Value at main $B$2
 x = -1.25
