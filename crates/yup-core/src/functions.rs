@@ -301,6 +301,11 @@ impl Builtin {
         self.entry().usage
     }
 
+    /// What each argument takes: a type, or `None` for anything.
+    pub fn takes(self) -> &'static [Option<CellType>] {
+        self.entry().takes
+    }
+
     /// How the result is shaped by the arguments.
     pub fn kind(self) -> Kind {
         self.entry().kind

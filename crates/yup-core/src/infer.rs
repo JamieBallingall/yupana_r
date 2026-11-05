@@ -1162,6 +1162,13 @@ impl Infer<'_> {
                     Some(seed) => self.ty(seed, params)?,
                     None => Ty::Never,
                 };
+                if let Some(builtin) = Builtin::lookup(&func.name) {
+                    for ((arg, found), wanted) in args.iter().zip(&types).zip(builtin.takes()) {
+                        if let Some(problem) = argument_problem(builtin, *wanted, *found) {
+                            return Err(Diagnostic::error(arg.pos, problem));
+                        }
+                    }
+                }
                 match Builtin::lookup(&func.name) {
                     Some(builtin) => match (builtin.gives(), builtin) {
                         (Gives::Always(ty), _) => Ty::Known(ty),
@@ -1352,6 +1359,27 @@ fn function_name(expr: &Expr) -> &str {
     }
 }
 
+/// What is wrong with giving `found` to an argument of `builtin` that takes `wanted`, if
+/// anything. A number may stand where a logical goes and the other way round, as in arithmetic;
+/// text goes only where text does, and only text goes there.
+fn argument_problem(builtin: Builtin, wanted: Option<CellType>, found: Ty) -> Option<String> {
+    let (Some(wanted), Ty::Known(found)) = (wanted, found) else {
+        return None;
+    };
+    let fits = match wanted {
+        CellType::Text => found == CellType::Text,
+        CellType::Number | CellType::Logical => found != CellType::Text,
+    };
+    (!fits).then(|| {
+        format!(
+            "`{}` takes {} here, and this is {}",
+            builtin.name(),
+            wanted.word(),
+            found.word()
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1537,6 +1565,14 @@ mod tests {
                 "6:11: error: `a` holds Number, not Text",
                 "9:9: error: `+` works on numbers, and this is Text; text is joined with `++`",
                 "13:7: error: `f` takes Number for `x`, and this is Text",
+            ]
+        );
+        assert_eq!(
+            typed("a : Local\na = sqrt \"x\"\nb : Local\nb = round 2 \"y\"\n")
+                .expect_err("wrong types"),
+            [
+                "7:10: error: `sqrt` takes Number here, and this is Text",
+                "9:13: error: `round` takes Number here, and this is Text",
             ]
         );
     }

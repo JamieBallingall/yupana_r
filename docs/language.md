@@ -204,7 +204,9 @@ names bindings, and `true` is `True`.
 
 ## Built-in functions
 
-Arguments that say how much come first, and the data last.
+Arguments that say how much come first, and the data last. Each argument is checked against
+what the function takes: text goes only where text does, and a number or a logical where
+either does, as in arithmetic.
 
 | Function | Result | Written as |
 |---|---|---|
