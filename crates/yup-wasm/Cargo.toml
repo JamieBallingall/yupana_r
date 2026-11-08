@@ -1,0 +1,19 @@
+[package]
+name = "yup-wasm"
+description = "The core as a WebAssembly module with no imports, which JavaScript calls through a byte layout."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+yup-core = { path = "../yup-core" }
+
+# Exporting a function needs `#[unsafe(no_mangle)]`, which the workspace's `forbid` refuses, so
+# this crate denies unsafe code instead and allows it on its three exports alone.
+[lints.rust]
+unsafe_code = "deny"

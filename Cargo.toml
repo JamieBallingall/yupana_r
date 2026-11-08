@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/yup-core", "crates/yup-cli"]
+members = ["crates/yup-core", "crates/yup-cli", "crates/yup-wasm"]
 
 [workspace.package]
 version = "0.0.0"
@@ -11,3 +11,13 @@ publish = false
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+# The WebAssembly module, as small as it can be made:
+# `cargo build -p yup-wasm --target wasm32-unknown-unknown --profile wasm`.
+[profile.wasm]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
