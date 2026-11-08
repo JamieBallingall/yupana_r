@@ -114,3 +114,19 @@ test("the library takes input files as a map, and shows a step", async () => {
   const { warnings } = await yup.check(source, { "history.csv": history });
   assert.deepEqual(warnings, []);
 });
+
+test("the page's library builds the same bytes as yup.mjs, and uses no Node", async () => {
+  const page = readFileSync(join(root, "target", "yup.html"), "utf8");
+  const script = page.match(/<script type="module">\n([\s\S]*?)<\/script>/);
+  assert.ok(script, "the page has its library's script");
+  assert.doesNotMatch(script[1], /node:|process\.|require\(/);
+  delete globalThis.yup;
+  await import(`data:text/javascript;base64,${Buffer.from(script[1]).toString("base64")}`);
+  const { yup: library } = globalThis;
+  assert.equal(library.version, yup.version);
+  const source = readFileSync(join(examples, "segments.yup"), "utf8");
+  const inputs = { "segments.csv": readFileSync(join(examples, "segments.csv"), "utf8") };
+  const fromPage = await library.build(source, inputs);
+  const fromModule = await yup.build(source, inputs);
+  assert.ok(Buffer.from(fromPage.xlsx).equals(Buffer.from(fromModule.xlsx)));
+});

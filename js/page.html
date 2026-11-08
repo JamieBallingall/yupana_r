@@ -1,0 +1,405 @@
+<!doctype html>
+<!--
+  yup.html: turns a .yup file and its CSV inputs into an xlsx workbook, in the browser.
+
+  The tool's core, compiled to WebAssembly, is embedded in this one file with the library part of
+  yup.mjs, so it needs no server and no network: open it from disk. Licensed under the Apache
+  License, Version 2.0.
+
+  This is the template that the bundler, `cargo run -p yup-bundle`, fills in.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>yup</title>
+<style>
+  :root {
+    --paper: #fbfbfa;
+    --panel: #ffffff;
+    --ink: #1f2328;
+    --muted: #656d76;
+    --line: #d8dee4;
+    --accent: #0b6bcb;
+    --accent-ink: #ffffff;
+    --error: #b42318;
+    --warning: #9a6700;
+    --good: #1a7f37;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #0f1115;
+      --panel: #161a20;
+      --ink: #e6e8eb;
+      --muted: #9aa4af;
+      --line: #2c323b;
+      --accent: #4c9ef5;
+      --accent-ink: #0f1115;
+      --error: #ff8a80;
+      --warning: #e3b341;
+      --good: #56d364;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header, main { max-width: 1200px; margin: 0 auto; padding: 0 16px; }
+  header { display: flex; align-items: baseline; gap: 12px; padding-top: 18px; }
+  h1 { margin: 0; font-size: 20px; }
+  header span { color: var(--muted); font-size: 13px; }
+  main {
+    display: grid;
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    gap: 16px;
+    padding-top: 14px;
+    padding-bottom: 24px;
+  }
+  @media (max-width: 820px) { main { grid-template-columns: minmax(0, 1fr); } }
+  section {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px;
+    min-width: 0;
+  }
+  h2 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em;
+       color: var(--muted); }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+  textarea {
+    width: 100%;
+    min-height: 60vh;
+    resize: vertical;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--paper);
+    color: var(--ink);
+    font: 13px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+    tab-size: 2;
+  }
+  button, select, input[type="text"] {
+    font: inherit;
+    padding: 5px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--ink);
+  }
+  button { cursor: pointer; }
+  button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-ink);
+  }
+  button:disabled { opacity: 0.55; cursor: default; }
+  label.file { position: relative; overflow: hidden; }
+  label.file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  input[type="text"] { min-width: 0; flex: 1 1 140px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  #inputs li {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 6px 0; border-top: 1px solid var(--line);
+  }
+  #inputs li:first-child { border-top: 0; }
+  .name { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 13px;
+          overflow-wrap: anywhere; }
+  .ok { color: var(--good); }
+  .missing { color: var(--muted); }
+  .quiet { color: var(--muted); margin: 0; }
+  #messages li { padding: 4px 0; overflow-wrap: anywhere; }
+  #messages button {
+    border: 0; padding: 0; background: none; color: inherit; text-align: left;
+    font: 13px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  #messages button:hover { text-decoration: underline; }
+  .error { color: var(--error); }
+  .warning { color: var(--warning); }
+  .done { color: var(--good); }
+  pre {
+    margin: 8px 0 0; padding: 10px; max-height: 50vh; overflow: auto;
+    background: var(--paper); border: 1px solid var(--line); border-radius: 6px;
+    font: 12px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  .stack { display: grid; gap: 16px; align-content: start; min-width: 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>yup</h1>
+  <span id="about"></span>
+</header>
+<main>
+  <section>
+    <div class="bar">
+      <label class="file"><button type="button" tabindex="-1">Open a .yup file…</button>
+        <input type="file" id="open" accept=".yup,text/plain"></label>
+      <span class="quiet" id="opened"></span>
+    </div>
+    <textarea id="source" spellcheck="false" autocomplete="off" autocapitalize="off"
+              aria-label=".yup source"></textarea>
+  </section>
+  <div class="stack">
+    <section>
+      <h2>Input files</h2>
+      <ul id="inputs"></ul>
+      <p class="quiet" id="no-inputs">This file reads no input files.</p>
+      <div class="bar" style="margin: 8px 0 0">
+        <label class="file"><button type="button" tabindex="-1">Add CSV files…</button>
+          <input type="file" id="add" accept=".csv,text/csv,text/plain" multiple></label>
+      </div>
+    </section>
+    <section>
+      <h2>Workbook</h2>
+      <div class="bar">
+        <input type="text" id="output" value="workbook.xlsx" aria-label="Workbook file name">
+        <button type="button" class="primary" id="build">Build and download</button>
+      </div>
+      <div class="bar">
+        <button type="button" id="check">Check</button>
+        <select id="step" aria-label="Step to show"></select>
+        <button type="button" id="show">Show</button>
+      </div>
+      <ul id="messages"></ul>
+      <pre id="shown" hidden></pre>
+    </section>
+  </div>
+</main>
+<script type="module">
+// __YUP_LIBRARY__
+globalThis.yup = {
+  version, languageVersion, steps, YupError, format, inputFiles, check, show, build,
+};
+</script>
+<script type="module">
+const { yup } = globalThis;
+const $ = (id) => document.getElementById(id);
+const source = $("source");
+const example = __YUP_EXAMPLE__;
+/** The input files read so far, by name. */
+const files = new Map();
+/** The input files the source names, with where, as of the last time it parsed. */
+let needed = [];
+let parses = true;
+
+$("about").textContent = `${yup.version}, reading .yup ${yup.languageVersion}`;
+for (const step of yup.steps) {
+  $("step").append(new Option(step, step, false, step === "ground"));
+}
+
+// The source is kept in this browser between visits, where it lets us.
+const remember = (text) => { try { localStorage.setItem("yup.source", text); } catch {} };
+let saved = null;
+try { saved = localStorage.getItem("yup.source"); } catch {}
+source.value = saved ?? example;
+
+/** Where `line` and `column`, counted in characters from 1, are in the text. */
+function offset(text, line, column) {
+  let at = 0;
+  for (let l = 1; l < line; l++) {
+    const next = text.indexOf("\n", at);
+    if (next < 0) return text.length;
+    at = next + 1;
+  }
+  for (let c = 1; c < column && at < text.length && text[at] !== "\n"; c++) {
+    at += text.codePointAt(at) > 0xffff ? 2 : 1;
+  }
+  return at;
+}
+
+function jump(line, column) {
+  const at = offset(source.value, line, column);
+  source.focus();
+  source.setSelectionRange(at, at);
+  const lines = source.value.slice(0, at).split("\n").length;
+  const height = source.scrollHeight / Math.max(1, source.value.split("\n").length);
+  source.scrollTop = Math.max(0, (lines - 4) * height);
+}
+
+/** Shows one line per diagnostic, each of which goes to its place in the source. */
+function say(diagnostics, done) {
+  const list = $("messages");
+  list.replaceChildren();
+  for (const diagnostic of diagnostics) {
+    const item = document.createElement("li");
+    item.className = diagnostic.severity;
+    const text = yup.format(diagnostic);
+    if (diagnostic.file === null) {
+      const go = document.createElement("button");
+      go.type = "button";
+      go.textContent = text;
+      go.addEventListener("click", () => jump(diagnostic.line, diagnostic.column));
+      item.append(go);
+    } else {
+      item.textContent = text;
+    }
+    list.append(item);
+  }
+  if (done) {
+    const item = document.createElement("li");
+    item.className = "done";
+    item.textContent = done;
+    list.append(item);
+  }
+}
+
+function problem(message) {
+  say([], null);
+  const item = document.createElement("li");
+  item.className = "error";
+  item.textContent = message;
+  $("messages").append(item);
+}
+
+/** Lists the input files the source names, and whether each has been added. */
+async function refresh() {
+  try {
+    needed = await yup.inputFiles(source.value);
+    parses = true;
+  } catch (error) {
+    if (!(error instanceof yup.YupError)) throw error;
+    parses = false;
+  }
+  const list = $("inputs");
+  list.replaceChildren();
+  for (const file of needed) {
+    const item = document.createElement("li");
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = file.name;
+    const state = document.createElement("span");
+    state.className = files.has(file.name) ? "ok" : "missing";
+    state.textContent = files.has(file.name) ? "added" : "needed";
+    item.append(name, state);
+    list.append(item);
+  }
+  $("no-inputs").hidden = needed.length > 0;
+  $("no-inputs").textContent = parses
+    ? "This file reads no input files."
+    : "The input files are listed once the source parses.";
+}
+
+/** The input files' contents, or a problem for each one not added yet. */
+function inputs() {
+  const missing = needed
+    .filter((file) => !files.has(file.name))
+    .map((file) => ({
+      severity: "error",
+      file: null,
+      line: file.line,
+      column: file.column,
+      message: `add the input file ${file.name}, with “Add CSV files…”`,
+    }));
+  return { contents: files, missing };
+}
+
+/** Runs a step, and says what came of it. */
+async function attempt(work) {
+  const { contents, missing } = inputs();
+  if (missing.length > 0) {
+    say(missing, null);
+    return;
+  }
+  for (const button of ["build", "check", "show"]) $(button).disabled = true;
+  try {
+    await work(contents);
+  } catch (error) {
+    if (error instanceof yup.YupError) {
+      say(error.diagnostics, null);
+    } else {
+      problem(String(error?.message ?? error));
+    }
+  } finally {
+    for (const button of ["build", "check", "show"]) $(button).disabled = false;
+  }
+}
+
+$("build").addEventListener("click", () => attempt(async (contents) => {
+  $("shown").hidden = true;
+  const { xlsx, warnings } = await yup.build(source.value, contents);
+  let name = $("output").value.trim() || "workbook.xlsx";
+  if (!/\.xlsx$/i.test(name)) name += ".xlsx";
+  const blob = new Blob([xlsx], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = name;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(link.href), 60000);
+  say(warnings, `Built ${name}, ${Math.max(1, Math.round(xlsx.length / 1024))} KB.`);
+}));
+
+$("check").addEventListener("click", () => attempt(async (contents) => {
+  $("shown").hidden = true;
+  const { warnings } = await yup.check(source.value, contents);
+  say(warnings, warnings.length > 0 ? "Checked, with warnings." : "Checked: no problems.");
+}));
+
+$("show").addEventListener("click", () => attempt(async (contents) => {
+  const step = $("step").value;
+  const shown = await yup.show(source.value, step, contents);
+  $("shown").textContent = shown.text;
+  $("shown").hidden = false;
+  say(shown.warnings, `Shown after ${step}.`);
+}));
+
+/** Reads a file as UTF-8, refusing one that is not. */
+async function text(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error(`${file.name} is not valid UTF-8`);
+  }
+}
+
+$("open").addEventListener("change", async (event) => {
+  const [file] = event.target.files;
+  event.target.value = "";
+  if (!file) return;
+  try {
+    source.value = await text(file);
+  } catch (error) {
+    problem(error.message);
+    return;
+  }
+  remember(source.value);
+  $("opened").textContent = file.name;
+  $("output").value = file.name.replace(/\.[^.]*$/, "") + ".xlsx";
+  say([], null);
+  await refresh();
+});
+
+$("add").addEventListener("change", async (event) => {
+  const problems = [];
+  for (const file of event.target.files) {
+    try {
+      files.set(file.name, await text(file));
+    } catch (error) {
+      problems.push(error.message);
+    }
+  }
+  event.target.value = "";
+  await refresh();
+  if (problems.length > 0) problem(problems.join("; "));
+});
+
+let pending;
+source.addEventListener("input", () => {
+  remember(source.value);
+  clearTimeout(pending);
+  pending = setTimeout(refresh, 300);
+});
+
+await refresh();
+</script>
+</body>
+</html>

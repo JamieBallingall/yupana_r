@@ -65,6 +65,10 @@ import { build, YupError } from "./yup.mjs";
 const { xlsx, warnings } = await build(source, { "history.csv": history });
 ```
 
+The bundler also writes `target/yup.html`, the same tool as one page: open it from disk, with no
+server and no network, paste or open a `.yup` file, add the CSV files it names, and build and
+download the workbook. Each problem it reports goes to its place in the source when clicked.
+
 ## Stage 1: scope
 
 Stage 1 is the language and the writer, with no evaluation. Its goal is **a concise description
@@ -130,7 +134,7 @@ per member of a set of unknown size (it becomes one two-dimensional range instea
 4. Formatting. *Built for 0.2: number formats, fonts, fills, borders, alignment, tab colors,
    hidden sheets, and column widths and row heights.*
 5. The website and the MCP server. *Built for 0.2: `target/yup.mjs`, the tool as one JavaScript
-   file, which a page can embed.*
+   file, and `target/yup.html`, the tool as one page.*
 
 ## Decided so far
 
@@ -598,6 +602,13 @@ is provisional. [docs/language.md](docs/language.md) describes 0.2 as it is buil
   `#[unsafe(no_mangle)]`, so that crate denies unsafe code with an exception for its three
   exports, while the core still forbids it. Node's own test runner checks that the file writes
   the native tool's bytes for every example and prints its messages.
+- **One page** (decided 2026-11-08). `target/yup.html` is `js/page.html` with the library part of
+  `yup.mjs` inlined into it, everything above the line that starts the command line, so that it
+  works opened from disk: a browser will not load a module script beside a page that comes from
+  a file. It takes a source typed, pasted or opened, lists the input files the source names and
+  whether each has been added, and builds the workbook as a download; Check and Show run the
+  steps without one. It needs no server, no network and no library, and keeps the source in the
+  browser between visits where the browser allows. It starts from the minimal example.
 - **Error messages** name what to write instead where the mistake is a habit from the
   spreadsheet app: `f(a, b)`, `SUM(x)`, a cell such as `B2` in a formula, `true` for `True`,
   `Input` for `Value`, and the statements of 0.1.

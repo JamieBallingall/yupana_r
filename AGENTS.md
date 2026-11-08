@@ -91,7 +91,8 @@ owned by a large vendor, so it is written clean-room and stays easy to defend.
   always builds for `wasm32-unknown-unknown`. It forbids `unsafe`. The `yup-wasm` crate, which
   exports it to JavaScript, denies `unsafe` but allows `#[unsafe(no_mangle)]` on its exports.
 - `js/template.mjs` is plain JavaScript with JSDoc types, and uses no API of Node's above the
-  line that starts the command line. The JavaScript needs no packages.
+  line that starts the command line, since `js/page.html` inlines that part. The page loads
+  nothing from the network. The JavaScript needs no packages.
 - Few dependencies. A library is used only if it is unlikely to move underneath us and solves a
   problem that would be a real chunk of code to write ourselves. The lexer and parser are written
   by hand. Ask before adding any dependency.
