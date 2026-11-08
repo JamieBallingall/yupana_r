@@ -61,7 +61,8 @@ export class YupError extends Error {
 export function format(diagnostic, source) {
   const file = diagnostic.file ?? source;
   const where = file === undefined ? "" : `${file}:`;
-  return `${where}${diagnostic.line}:${diagnostic.column}: ${diagnostic.severity}: ${diagnostic.message}`;
+  const { line, column, severity, message } = diagnostic;
+  return `${where}${line}:${column}: ${severity}: ${message}`;
 }
 
 /**
@@ -470,7 +471,13 @@ async function readInputs(input, source) {
   for (const file of files) {
     const path = join(folder, file.name);
     const problem = (/** @type {string} */ message) =>
-      problems.push({ severity: "error", file: null, line: file.line, column: file.column, message });
+      problems.push({
+        severity: "error",
+        file: null,
+        line: file.line,
+        column: file.column,
+        message,
+      });
     let bytes;
     try {
       bytes = readFileSync(path);
