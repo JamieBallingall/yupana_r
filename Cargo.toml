@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/yup-core", "crates/yup-cli", "crates/yup-wasm"]
+members = ["crates/yup-core", "crates/yup-cli", "crates/yup-wasm", "crates/yup-bundle"]
 
 [workspace.package]
 version = "0.0.0"

@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "yup-bundle"
+version = "0.0.0"
+dependencies = [
+ "yup-core",
+]
+
+[[package]]
 name = "yup-cli"
 version = "0.0.0"
 dependencies = [
