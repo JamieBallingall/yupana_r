@@ -33,9 +33,12 @@ into an xlsx workbook, natively and as WebAssembly.
     cargo fmt --check
     cargo clippy --all-targets -- -D warnings
     cargo test
-    cargo build -p yup-core --target wasm32-unknown-unknown
+    cargo run -p yup-bundle
+    node --test js/yup.test.mjs
 
-All four are clean before every commit.
+All five are clean before every commit. The bundler builds the core for `wasm32-unknown-unknown`
+and writes `target/yup.mjs`, which the Node tests, on Node 18 or later, check against the
+native tool.
 
 ## Style
 
@@ -85,7 +88,10 @@ owned by a large vendor, so it is written clean-room and stays easy to defend.
 ## Rules
 
 - The core crate does no input or output: no files, no environment, no clock, no threads. It
-  always builds for `wasm32-unknown-unknown`. It forbids `unsafe`.
+  always builds for `wasm32-unknown-unknown`. It forbids `unsafe`. The `yup-wasm` crate, which
+  exports it to JavaScript, denies `unsafe` but allows `#[unsafe(no_mangle)]` on its exports.
+- `js/template.mjs` is plain JavaScript with JSDoc types, and uses no API of Node's above the
+  line that starts the command line. The JavaScript needs no packages.
 - Few dependencies. A library is used only if it is unlikely to move underneath us and solves a
   problem that would be a real chunk of code to write ourselves. The lexer and parser are written
   by hand. Ask before adding any dependency.

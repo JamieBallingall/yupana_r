@@ -50,6 +50,21 @@ any step makes of a file: the steps up to Check print a `.yup` file with more wo
 prints the cells, and Package the parts of the xlsx file. [examples](examples) has seven files to
 start from.
 
+The same tool comes as one JavaScript file, which needs only a runtime with WebAssembly: Node 18
+or later, Deno, Bun or a browser.
+
+    cargo run -p yup-bundle
+    node target/yup.mjs build examples/forecast.yup -o target/forecast.xlsx
+
+Run by Node, `target/yup.mjs` takes the same commands as `yup`, with the same messages and exit
+codes, and writes the same bytes. Imported, it is a library, typed by `target/yup.d.ts`:
+
+```js
+import { build, YupError } from "./yup.mjs";
+
+const { xlsx, warnings } = await build(source, { "history.csv": history });
+```
+
 ## Stage 1: scope
 
 Stage 1 is the language and the writer, with no evaluation. Its goal is **a concise description
@@ -114,7 +129,8 @@ per member of a set of unknown size (it becomes one two-dimensional range instea
 3. The xlsx writer. *Built for 0.1, and extended for 0.2.*
 4. Formatting. *Built for 0.2: number formats, fonts, fills, borders, alignment, tab colors,
    hidden sheets, and column widths and row heights.*
-5. The website and the MCP server.
+5. The website and the MCP server. *Built for 0.2: `target/yup.mjs`, the tool as one JavaScript
+   file, which a page can embed.*
 
 ## Decided so far
 
@@ -569,6 +585,19 @@ is provisional. [docs/language.md](docs/language.md) describes 0.2 as it is buil
   as one of its locals writes that local in place, so that no LET hides the parameter.
 - **The default font** stays as in 0.1, the typeface and size of the standard's own examples, and
   the workbook's style changes it.
+- **One JavaScript file** (decided 2026-11-07). `target/yup.mjs` is the core compiled to
+  WebAssembly, embedded as base64 in a template, so that it runs wherever JavaScript has
+  WebAssembly. It is a library first (`inputFiles`, `check`, `show`, `build`, and a `YupError`
+  with each diagnostic as data) and a program when Node runs it, with `yup`'s commands, messages
+  and exit codes; the program comes after a marked line and is the only part that uses Node, so
+  that a page can embed the library alone. The template is plain JavaScript with JSDoc types and
+  a hand-written `yup.d.ts`, so building it needs no npm toolchain, and the bundler is a Rust
+  binary, `cargo run -p yup-bundle`. The file is generated into `target/` and never committed.
+  The `yup-wasm` crate talks to JavaScript through a byte layout rather than a binding library,
+  and never reads through a pointer it is given; exporting a function still needs
+  `#[unsafe(no_mangle)]`, so that crate denies unsafe code with an exception for its three
+  exports, while the core still forbids it. Node's own test runner checks that the file writes
+  the native tool's bytes for every example and prints its messages.
 - **Error messages** name what to write instead where the mistake is a habit from the
   spreadsheet app: `f(a, b)`, `SUM(x)`, a cell such as `B2` in a formula, `true` for `True`,
   `Input` for `Value`, and the statements of 0.1.
